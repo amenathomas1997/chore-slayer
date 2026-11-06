@@ -1,0 +1,28 @@
+# Secrets: never commit these
+config.php
+installed.lock
+keystore.properties
+*.jks
+*.keystore
+local.properties
+google-services.json
+GoogleService-Info.plist
+.env
+.env.*
+
+# Builds
+*.apk
+*.aab
+*.dm
+apps/android/**/build/
+apps/android/app/release/
+apps/android/.gradle/
+apps/ios/*.xcodeproj/
+apps/ios/build/
+DerivedData/
+
+# OS and editor junk
+.DS_Store
+._*
+Thumbs.db
+*.log

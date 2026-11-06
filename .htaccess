@@ -1,0 +1,49 @@
+# Chore Tracker — Apache config for cPanel and similar hosts.
+# Safe defaults; every block is guarded so it won't 500 on hosts missing a module.
+
+# --- Make the apps' "Authorization: Bearer <token>" header reach PHP ----------
+# Many cPanel hosts (PHP-FPM/CGI) strip the Authorization header before PHP sees
+# it, which makes parent login "work" but every parent action return 401. These
+# rules re-expose it. auth.php reads HTTP_AUTHORIZATION / REDIRECT_HTTP_AUTHORIZATION.
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteCond %{HTTP:Authorization} .
+    RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+</IfModule>
+<IfModule mod_setenvif.c>
+    SetEnvIfNoCase ^Authorization$ "(.+)" HTTP_AUTHORIZATION=$1
+</IfModule>
+# Apache 2.4.13+ with PHP-FPM: the supported way to pass auth through.
+<IfModule mod_cgi.c>
+    CGIPassAuth On
+</IfModule>
+<IfModule mod_cgid.c>
+    CGIPassAuth On
+</IfModule>
+
+# --- Don't expose sensitive files over the web -------------------------------
+<FilesMatch "(?i)^(config\.php|config\.sample\.php|.*\.md|installed\.lock)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+# --- General hardening --------------------------------------------------------
+# No directory listings.
+Options -Indexes
+
+# Always serve the API and pages as UTF-8.
+<IfModule mod_mime.c>
+    AddDefaultCharset utf-8
+</IfModule>
+
+# php -- BEGIN cPanel-generated handler, do not edit
+# Set the “ea-php81” package as the default “PHP” programming language.
+<IfModule mime_module>
+  AddHandler application/x-httpd-ea-php81 .php .php8 .phtml
+</IfModule>
+# php -- END cPanel-generated handler, do not edit
