@@ -114,12 +114,30 @@ switch ($action) {
     // ---- Kid login ------------------------------------------------------
     case 'child_login':
         need_post($method);
-        $f = require_fields(['firstName', 'lastName', 'familyId']);
+        // A device that already knows its family sends familyId. A kid signing in
+        // on their own (e.g. the Care Circle Kids app) sends the family code instead.
+        $familyId = field('familyId', '');
+        if ($familyId === '' && ($fc = field('familyCode', '')) !== '') {
+            login_throttle_check();
+            $fam = family_by_code($fc);
+            if (!$fam) {
+                // Only a wrong family code counts toward the lockout. A misspelled
+                // name in a real family must not lock the whole household out.
+                login_register_failure();
+                json_out(['error' => 'bad_family', 'message' => "That family code isn't right. Ask a parent for it."], 403);
+            }
+            $familyId = $fam['id'];
+        }
+        $f = require_fields(['firstName', 'lastName']);
+        if ($familyId === '') {
+            json_out(['error' => 'missing_fields', 'fields' => ['familyId'],
+                'message' => 'A family is required to sign in.'], 422);
+        }
         $stmt = db()->prepare(
             'SELECT id, first_name, last_name, color, emoji FROM children
              WHERE active = 1 AND family_id = ? AND LOWER(first_name) = LOWER(?) AND LOWER(last_name) = LOWER(?)'
         );
-        $stmt->execute([$f['familyId'], $f['firstName'], $f['lastName']]);
+        $stmt->execute([$familyId, $f['firstName'], $f['lastName']]);
         $child = $stmt->fetch();
         if (!$child) {
             json_out(['error' => 'not_found',
