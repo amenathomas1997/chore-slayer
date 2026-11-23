@@ -11,6 +11,7 @@ define('CHORE_APP', true);
 require __DIR__ . '/lib/helpers.php';
 require __DIR__ . '/lib/db.php';
 require __DIR__ . '/lib/auth.php';
+require __DIR__ . '/lib/admin.php';
 
 // Generalized time-of-day slots, in the order they occur through the day.
 const SLOTS = ['morning', 'midday', 'afternoon', 'evening', 'anytime'];
@@ -78,6 +79,103 @@ switch ($action) {
         $pin = field('pin');
         validate_pin($pin);
         set_pin($familyId, $pin);
+        json_out(['ok' => true]);
+        break;
+
+    case 'delete_family': // permanently delete the whole family account and all its data
+        need_post($method);
+        $familyId = require_parent();
+        // Ask for the PIN again so a signed-in device left unattended can't wipe the family.
+        if (!check_family_pin($familyId, field('pin'))) {
+            json_out(['error' => 'bad_pin', 'message' => 'PIN is incorrect.'], 403);
+        }
+        delete_family_data($familyId);
+        json_out(['ok' => true]);
+        break;
+
+    // ---- Site admin (admin.html) ----------------------------------------
+    case 'admin_status':
+        admin_install_schema();
+        json_out(['configured' => admin_pass_hash() !== null]);
+        break;
+
+    case 'admin_login':
+        need_post($method);
+        admin_install_schema();
+        login_throttle_check();
+        $hash = admin_pass_hash();
+        if (!$hash || !password_verify(field('password'), $hash)) {
+            login_register_failure();
+            json_out(['error' => 'bad_password', 'message' => 'Incorrect admin password.'], 403);
+        }
+        login_register_success();
+        json_out(['ok' => true, 'token' => admin_start_session()]);
+        break;
+
+    case 'admin_logout':
+        admin_install_schema();
+        admin_end_session();
+        json_out(['ok' => true]);
+        break;
+
+    case 'admin_families':
+        admin_install_schema();
+        require_admin();
+        json_out(['families' => admin_list_families()]);
+        break;
+
+    case 'admin_update_family': // rename and/or change the family code
+        need_post($method);
+        admin_install_schema();
+        require_admin();
+        $fam = admin_family_or_404(field('id'));
+        $name = trim(field('name', (string) $fam['name']));
+        if (mb_strlen($name) > 120) {
+            json_out(['error' => 'bad_name', 'message' => 'Family name is too long (120 characters max).'], 422);
+        }
+        $code = normalize_family_code(field('code', $fam['family_code']));
+        if (!preg_match('/^[A-Z0-9]{4,16}$/', $code)) {
+            json_out(['error' => 'bad_code', 'message' => 'Family code must be 4 to 16 letters or numbers.'], 422);
+        }
+        $other = family_by_code($code);
+        if ($other && $other['id'] !== $fam['id']) {
+            json_out(['error' => 'code_taken', 'message' => 'Another family already uses that code.'], 409);
+        }
+        db()->prepare('UPDATE families SET name = ?, family_code = ? WHERE id = ?')
+            ->execute([$name === '' ? null : $name, $code, $fam['id']]);
+        json_out(['ok' => true, 'code' => $code, 'name' => $name === '' ? null : $name]);
+        break;
+
+    case 'admin_reset_pin': // set a new parent PIN; signs the family out everywhere
+        need_post($method);
+        admin_install_schema();
+        require_admin();
+        $fam = admin_family_or_404(field('id'));
+        $pin = field('pin');
+        validate_pin($pin);
+        set_pin($fam['id'], $pin);
+        db()->prepare('DELETE FROM sessions WHERE family_id = ?')->execute([$fam['id']]);
+        json_out(['ok' => true]);
+        break;
+
+    case 'admin_signout_family': // end every parent sign-in for a family
+        need_post($method);
+        admin_install_schema();
+        require_admin();
+        $fam = admin_family_or_404(field('id'));
+        db()->prepare('DELETE FROM sessions WHERE family_id = ?')->execute([$fam['id']]);
+        json_out(['ok' => true]);
+        break;
+
+    case 'admin_delete_family': // type the family code to confirm
+        need_post($method);
+        admin_install_schema();
+        require_admin();
+        $fam = admin_family_or_404(field('id'));
+        if (normalize_family_code(field('confirmCode')) !== $fam['family_code']) {
+            json_out(['error' => 'confirm_mismatch', 'message' => 'Type the family code exactly to confirm.'], 422);
+        }
+        delete_family_data($fam['id']);
         json_out(['ok' => true]);
         break;
 

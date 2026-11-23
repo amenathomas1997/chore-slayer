@@ -2,7 +2,7 @@ import Foundation
 import Combine
 
 enum Screen {
-    case connecting, connectDevice, role, kidLogin, kidBoard, kidSummary, changePin, parentLogin, parentHome, childHub, childEditor
+    case connecting, connectDevice, role, kidLogin, kidBoard, kidSummary, changePin, deleteFamily, parentLogin, parentHome, childHub, childEditor
     case tasks, taskEditor, dailyReport, bhis, adjustDay, overrideEditor
 }
 
@@ -117,7 +117,7 @@ final class AppModel: ObservableObject {
         case .kidLogin, .parentLogin: screen = .role
         case .kidBoard: screen = isParent ? .childHub : .kidLogin
         case .kidSummary: screen = .kidBoard
-        case .changePin: screen = .parentHome
+        case .changePin, .deleteFamily: screen = .parentHome
         case .childHub: screen = .parentHome
         case .childEditor: screen = managedChild != nil ? .childHub : .parentHome
         case .tasks: screen = .childHub
@@ -195,6 +195,16 @@ final class AppModel: ObservableObject {
             try await self.api.changePin(current: current, new: new)
             self.notice = "PIN changed."
             self.screen = .parentHome
+        }
+    }
+
+    func openDeleteFamily() { error = nil; notice = nil; screen = .deleteFamily }
+
+    func deleteFamily(pin: String) async {
+        await run {
+            try await self.api.deleteFamily(pin: pin)
+            self.forgetFamily()
+            self.notice = "Your family and all its data were deleted."
         }
     }
 

@@ -8,7 +8,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="theme-color" content="#2b4fb0">
     <title>Chore Slayer</title>
-    <link rel="stylesheet" href="assets/styles.css?v=9">
+    <link rel="stylesheet" href="assets/styles.css?v=10">
     <link rel="icon" type="image/svg+xml" href="assets/icon.svg?v=2">
     <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png?v=2">
     <link rel="apple-touch-icon" href="assets/apple-touch-icon.png?v=2">
@@ -39,6 +39,6 @@
         <small>Made with care for tracking great days. <span id="footer-day"></span> &middot; <a href="privacy.html">Privacy Policy</a></small>
     </footer>
 
-    <script src="assets/app.js?v=11"></script>
+    <script src="assets/app.js?v=12"></script>
 </body>
 </html>

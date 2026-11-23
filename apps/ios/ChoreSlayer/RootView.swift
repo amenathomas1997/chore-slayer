@@ -49,6 +49,7 @@ struct RootView: View {
                         Menu {
                             Button("Family code") { showFamilyCode = true }
                             Button("Change PIN") { model.openChangePin() }
+                            Button("Delete family…", role: .destructive) { model.openDeleteFamily() }
                             Button("Log out") { model.logout() }
                         } label: {
                             Image(systemName: "ellipsis.circle")
@@ -99,6 +100,7 @@ struct RootView: View {
         case .connectDevice: ConnectDeviceView(model: model)
         case .kidSummary: KidSummaryView(model: model)
         case .changePin: ChangePinView(model: model)
+        case .deleteFamily: DeleteFamilyView(model: model)
         case .role: RoleView(model: model)
         case .kidLogin: KidLoginView(model: model)
         case .kidBoard: BoardView(model: model)

@@ -313,6 +313,9 @@
                 class: 'header-btn', onclick: () => openChangePin()
             }, 'Change PIN'));
             box.appendChild(el('button', {
+                class: 'header-btn', onclick: () => openDeleteFamily()
+            }, 'Delete family'));
+            box.appendChild(el('button', {
                 class: 'header-btn', onclick: () => parentLogout('kid')
             }, 'Log out'));
         }
@@ -1577,6 +1580,27 @@
             } }, 'Change PIN')
         ]);
         openModal('Change parent PIN', content, actions);
+    }
+
+    // ---------- Delete family (account deletion) ----------
+    function openDeleteFamily() {
+        const pin = el('input', { type: 'password', inputmode: 'numeric', 'aria-label': 'Parent PIN' });
+        const content = el('div', {}, [
+            el('p', { text: 'This permanently deletes your family, every child, all tasks, history and reports, on every device. It cannot be undone.' }),
+            el('div', { class: 'field' }, [el('label', { text: 'Enter your parent PIN to confirm' }), pin]),
+        ]);
+        const actions = el('div', { class: 'modal__actions' }, [
+            el('button', { class: 'btn btn--ghost', onclick: closeModal }, 'Cancel'),
+            el('button', { class: 'btn btn--danger', onclick: async () => {
+                try {
+                    await api('delete_family', { method: 'POST', body: { pin: pin.value } });
+                    closeModal();
+                    switchFamily();
+                    toast('Your family and all its data were deleted.', 'success');
+                } catch (err) { toast(err.message, 'error'); }
+            } }, 'Delete everything')
+        ]);
+        openModal('Delete family', content, actions);
     }
 
     // ==================================================================

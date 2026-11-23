@@ -200,6 +200,11 @@ final class Api {
         _ = try await raw("change_pin", method: "POST", body: ["current": current, "pin": new])
     }
 
+    /// Permanently deletes the family and all its data (App Store account deletion).
+    func deleteFamily(pin: String) async throws {
+        _ = try await raw("delete_family", method: "POST", body: ["pin": pin])
+    }
+
     func parentLogout() async {
         _ = try? await raw("parent_logout", method: "POST")
     }

@@ -227,3 +227,24 @@ function login_register_success(): void
 {
     db()->prepare('DELETE FROM login_attempts WHERE ip = ?')->execute([client_ip()]);
 }
+
+/** Permanently delete a family and everything that belongs to it. */
+function delete_family_data(string $familyId): void
+{
+    $pdo = db();
+    $pdo->beginTransaction();
+    try {
+        $kids = 'SELECT id FROM children WHERE family_id = ?';
+        $pdo->prepare("DELETE FROM task_overrides WHERE task_id IN (SELECT id FROM tasks WHERE child_id IN ($kids))")->execute([$familyId]);
+        foreach (['completions', 'tasks', 'reports'] as $t) {
+            $pdo->prepare("DELETE FROM $t WHERE child_id IN ($kids)")->execute([$familyId]);
+        }
+        $pdo->prepare('DELETE FROM children WHERE family_id = ?')->execute([$familyId]);
+        $pdo->prepare('DELETE FROM sessions WHERE family_id = ?')->execute([$familyId]);
+        $pdo->prepare('DELETE FROM families WHERE id = ?')->execute([$familyId]);
+        $pdo->commit();
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        throw $e;
+    }
+}

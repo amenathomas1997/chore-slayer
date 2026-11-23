@@ -162,7 +162,7 @@ main:focus { outline: none; }
 /* ---- Forms ---- */
 label { display: block; font-weight: 600; margin-bottom: 6px; }
 .field { margin-bottom: 16px; }
-input[type=text], input[type=password], input[type=date],
+input[type=text], input[type=password], input[type=date], input[type=search],
 input[type=number], select, textarea {
     font: inherit;
     width: 100%;

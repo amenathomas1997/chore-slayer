@@ -179,6 +179,34 @@ struct ChangePinView: View {
     }
 }
 
+/// Account deletion: removes the family, children, tasks and history for good.
+struct DeleteFamilyView: View {
+    @ObservedObject var model: AppModel
+    @State private var pin = ""
+    @State private var confirming = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Delete family")
+                .font(.title2.bold())
+                .accessibilityAddTraits(.isHeader)
+            Text("This permanently deletes your family account, every child, all tasks, history and reports, on every device and on the web. It cannot be undone.")
+            PinField(title: "Parent PIN", pin: $pin, isNew: false)
+            Button("Delete everything", role: .destructive) { confirming = true }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                .frame(maxWidth: .infinity, minHeight: 48)
+                .disabled(model.busy || pin.count < 4)
+        }
+        .confirmationDialog("Delete this family and all its data?", isPresented: $confirming, titleVisibility: .visible) {
+            Button("Delete forever", role: .destructive) {
+                Task { await model.deleteFamily(pin: pin) }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+    }
+}
+
 /// "See my day": the kid's celebration summary, like the web app's.
 struct KidSummaryView: View {
     @ObservedObject var model: AppModel
