@@ -2,7 +2,7 @@ import Foundation
 import Combine
 
 enum Screen {
-    case connecting, role, kidLogin, kidBoard, parentLogin, parentHome, childHub, childEditor
+    case connecting, connectDevice, role, kidLogin, kidBoard, kidSummary, changePin, parentLogin, parentHome, childHub, childEditor
     case tasks, taskEditor, dailyReport, bhis, adjustDay, overrideEditor
 }
 
@@ -11,6 +11,10 @@ final class AppModel: ObservableObject {
     @Published var screen: Screen = .connecting
     @Published var busy = false
     @Published var error: String?
+    /// A non-error status message, e.g. "the parent area locked".
+    @Published var notice: String?
+    /// The family this device is linked to (nil ⇒ show "Connect this device").
+    @Published var family: Family?
 
     @Published var statusInfo: StatusInfo?
     @Published var today = ""
@@ -32,6 +36,20 @@ final class AppModel: ObservableObject {
     private let session = Session()
     private lazy var api = Api(session)
 
+    /// Lock the parent area after this long without a tap.
+    static let parentIdleLimit: TimeInterval = {
+        #if DEBUG
+        // Debug builds only: shorten the lock for testing with CHORE_IDLE_SECONDS.
+        if let v = ProcessInfo.processInfo.environment["CHORE_IDLE_SECONDS"], let n = Double(v) { return n }
+        #endif
+        return 10 * 60
+    }()
+    private var lastParentActivity = Date()
+
+    init() {
+        family = session.family
+    }
+
     // MARK: connect / role
 
     func connect() async {
@@ -39,19 +57,67 @@ final class AppModel: ObservableObject {
             let s = try await self.api.status()
             self.statusInfo = s
             self.today = s.today
-            self.isParent = s.isParent
-            self.screen = .role
+            self.isParent = false   // a fresh launch never starts signed in as a parent
+            self.screen = self.family == nil ? .connectDevice : .role
         }
     }
 
-    func chooseKid() { error = nil; screen = .kidLogin }
-    func chooseParent() { error = nil; screen = .parentLogin }
+    // MARK: family / device link
+
+    /// Link this device to a family with its family code and parent PIN.
+    func connectDevice(code: String, pin: String) async {
+        await run {
+            let r = try await self.api.parentLogin(pin: pin, familyCode: code)
+            self.session.family = r.family
+            self.family = r.family
+            self.session.token = r.token
+            self.isParent = true
+            self.markParentActivity()
+            self.children = try await self.api.children()
+            self.screen = .parentHome
+        }
+    }
+
+    /// Create a brand-new family. The new family code is shown afterwards
+    /// (`newFamilyCode`), because it is needed to add more devices.
+    func createFamily(name: String, pin: String) async {
+        await run {
+            let r = try await self.api.signup(pin: pin, name: name)
+            self.session.family = r.family
+            self.family = r.family
+            self.session.token = r.token
+            self.isParent = true
+            self.markParentActivity()
+            self.children = try await self.api.children()
+            self.newFamilyCode = r.family.code
+            self.screen = .parentHome
+        }
+    }
+
+    /// Set right after creating a family so the code is shown once.
+    @Published var newFamilyCode: String?
+
+    /// Unlink this device from its family (back to "Connect this device").
+    func forgetFamily() {
+        endParentSession()
+        session.family = nil
+        family = nil
+        child = nil
+        board = nil
+        screen = .connectDevice
+    }
+
+    func chooseKid() { error = nil; notice = nil; screen = .kidLogin }
+    func chooseParent() { error = nil; notice = nil; screen = .parentLogin }
 
     func back() {
         error = nil
+        notice = nil
         switch screen {
         case .kidLogin, .parentLogin: screen = .role
         case .kidBoard: screen = isParent ? .childHub : .kidLogin
+        case .kidSummary: screen = .kidBoard
+        case .changePin: screen = .parentHome
         case .childHub: screen = .parentHome
         case .childEditor: screen = managedChild != nil ? .childHub : .parentHome
         case .tasks: screen = .childHub
@@ -66,12 +132,31 @@ final class AppModel: ObservableObject {
     // MARK: kid
 
     func kidLogin(first: String, last: String) async {
+        guard let fam = family else { screen = .connectDevice; return }
+        // A kid signing in always ends any parent sign-in on this device first.
+        if session.token != nil { endParentSession() }
         await run {
-            let c = try await self.api.childLogin(firstName: first, lastName: last)
+            let c = try await self.api.childLogin(firstName: first, lastName: last, familyId: fam.id)
             self.child = c
             self.board = try await self.api.daySummary(childId: c.id)
             self.screen = .kidBoard
         }
+    }
+
+    /// "See my day": the kid's end-of-day summary.
+    func openKidSummary() async {
+        guard let c = child else { return }
+        await run {
+            self.board = try await self.api.daySummary(childId: c.id)
+            self.screen = .kidSummary
+        }
+    }
+
+    /// "Switch user" on a kid's board.
+    func kidSwitchUser() {
+        child = nil
+        board = nil
+        screen = .kidLogin
     }
 
     func toggle(_ taskId: String) async {
@@ -90,12 +175,65 @@ final class AppModel: ObservableObject {
     // MARK: parent
 
     func parentLogin(pin: String) async {
+        guard let fam = family else { screen = .connectDevice; return }
         await run {
-            self.session.token = try await self.api.parentLogin(pin: pin)
-            self.children = try await self.api.children()
+            let r = try await self.api.parentLogin(pin: pin, familyId: fam.id)
+            self.session.token = r.token
+            self.session.family = r.family
+            self.family = r.family
             self.isParent = true
+            self.markParentActivity()
+            self.children = try await self.api.children()
             self.screen = .parentHome
         }
+    }
+
+    func openChangePin() { error = nil; notice = nil; screen = .changePin }
+
+    func changePin(current: String, new: String) async {
+        await run {
+            try await self.api.changePin(current: current, new: new)
+            self.notice = "PIN changed."
+            self.screen = .parentHome
+        }
+    }
+
+    /// "Kid sign-in": sign the parent out and hand the device to a kid.
+    func handToKid() {
+        endParentSession()
+        screen = .kidLogin
+    }
+
+    // MARK: parent idle lock
+
+    func markParentActivity() { lastParentActivity = Date() }
+
+    /// Call on a timer and when the app comes back to the foreground.
+    func checkParentIdle() {
+        guard isParent, session.token != nil else { return }
+        guard Date().timeIntervalSince(lastParentActivity) >= Self.parentIdleLimit else { return }
+        endParentSession()
+        screen = .kidLogin
+        notice = "The parent area locked after 10 minutes without use. Enter the PIN to go back in."
+    }
+
+    /// Ends the parent sign-in here and on the server; the device stays linked.
+    private func endParentSession() {
+        if session.token != nil {
+            let api = self.api
+            Task { await api.parentLogout() }
+        }
+        session.token = nil
+        isParent = false
+        children = []
+        managedChild = nil
+        editingChild = nil
+        parentTasks = []
+        editingTask = nil
+        reportBundle = nil
+        bhisReport = nil
+        daySchedule = nil
+        editingOverride = nil
     }
 
     func openChildHub(_ c: Child) { managedChild = c; error = nil; screen = .childHub }
@@ -188,6 +326,16 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func renameSubtask(subId: String, title: String) async {
+        guard let c = managedChild, !title.isEmpty else { return }
+        let keepId = editingTask?.id
+        await run {
+            try await self.api.updateSubtask(id: subId, title: title)
+            self.parentTasks = try await self.api.parentTasks(childId: c.id)
+            self.editingTask = self.parentTasks.first { $0.id == keepId } ?? self.editingTask
+        }
+    }
+
     func removeSubtask(subId: String) async {
         guard let c = managedChild else { return }
         let keepId = editingTask?.id
@@ -276,21 +424,19 @@ final class AppModel: ObservableObject {
     }
 
     func logout() {
-        Task { await api.parentLogout() }
-        session.token = nil
-        isParent = false
+        endParentSession()
         child = nil
         board = nil
-        children = []
-        managedChild = nil
-        screen = .role
+        screen = .kidLogin
     }
 
     // MARK: helpers
 
     private func run(_ block: @escaping () async throws -> Void) async {
+        if isParent { markParentActivity() }
         busy = true
         error = nil
+        notice = nil
         do {
             try await block()
         } catch let e as ApiError {

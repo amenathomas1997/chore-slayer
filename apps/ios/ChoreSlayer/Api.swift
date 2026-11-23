@@ -5,7 +5,6 @@ import Foundation
 struct StatusInfo: Codable {
     let installed: Bool
     let apiVersion: String
-    let hasPin: Bool
     let isParent: Bool
     let today: String
 }
@@ -43,6 +42,13 @@ struct Counts: Codable {
     let total: Int
     let done: Int
     let percent: Int
+    let chores: DoneTotal?
+    let activities: DoneTotal?
+}
+
+struct DoneTotal: Codable {
+    let total: Int
+    let done: Int
 }
 
 struct DaySummary: Codable {
@@ -169,18 +175,38 @@ final class Api {
 
     func status() async throws -> StatusInfo { try await get("status") }
 
-    func parentLogin(pin: String) async throws -> String {
-        let r: TokenResp = try await send("parent_login", method: "POST", body: ["pin": pin])
-        return r.token ?? ""
+    /// Parent PIN sign-in for this device's family. A new device passes the
+    /// family code; a device already linked passes its stored family id.
+    func parentLogin(pin: String, familyCode: String? = nil, familyId: String? = nil) async throws -> (token: String, family: Family) {
+        var body: [String: String] = ["pin": pin]
+        if let familyId { body["familyId"] = familyId } else if let familyCode { body["familyCode"] = familyCode }
+        let r: TokenResp = try await send("parent_login", method: "POST", body: body)
+        guard let token = r.token, let family = r.family else {
+            throw ApiError(code: "bad_response", message: "The server's answer was missing the sign-in details.", status: 0)
+        }
+        return (token, family)
+    }
+
+    /// Create a new family; returns its sign-in token and family (with its code).
+    func signup(pin: String, name: String) async throws -> (token: String, family: Family) {
+        let r: TokenResp = try await send("signup", method: "POST", body: ["pin": pin, "name": name])
+        guard let token = r.token, let family = r.family else {
+            throw ApiError(code: "bad_response", message: "The server's answer was missing the new family's details.", status: 0)
+        }
+        return (token, family)
+    }
+
+    func changePin(current: String, new: String) async throws {
+        _ = try await raw("change_pin", method: "POST", body: ["current": current, "pin": new])
     }
 
     func parentLogout() async {
         _ = try? await raw("parent_logout", method: "POST")
     }
 
-    func childLogin(firstName: String, lastName: String) async throws -> Child {
+    func childLogin(firstName: String, lastName: String, familyId: String) async throws -> Child {
         let r: ChildResp = try await send("child_login", method: "POST",
-                                          body: ["firstName": firstName, "lastName": lastName])
+                                          body: ["firstName": firstName, "lastName": lastName, "familyId": familyId])
         return r.child
     }
 
@@ -252,6 +278,10 @@ final class Api {
     func addSubtask(parentId: String, title: String, emoji: String) async throws {
         _ = try await raw("add_subtask", method: "POST",
                           body: ["parentId": parentId, "title": title, "emoji": emoji])
+    }
+
+    func updateSubtask(id: String, title: String) async throws {
+        _ = try await raw("update_subtask", method: "POST", body: ["id": id, "title": title])
     }
 
     // MARK: parent — daily report
@@ -341,7 +371,15 @@ final class Api {
 
 // MARK: - Response envelopes
 
-private struct TokenResp: Codable { let token: String? }
+private struct TokenResp: Codable { let token: String?; let family: Family? }
+
+/// The family this device is linked to. Not secret on its own: signing in as a
+/// parent still needs the PIN.
+struct Family: Codable, Equatable {
+    let id: String
+    let code: String
+    let name: String?
+}
 private struct ChildResp: Codable { let child: Child }
 private struct ChildrenResp: Codable { let children: [Child] }
 private struct ToggleResp: Codable { let completed: Bool }

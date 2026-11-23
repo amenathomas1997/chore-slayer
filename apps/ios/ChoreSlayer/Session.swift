@@ -1,30 +1,51 @@
 import Foundation
 import Security
 
-/// Fixed server + the parent bearer token (stored in the Keychain).
+/// Fixed server, the family this device is linked to, and the parent sign-in.
 final class Session {
     /// The app always talks to this server (a cPanel subdomain with api.php at the root).
     static let defaultBase = "https://chores.a-t-365.com/api.php"
 
-    var baseURL: String { Self.defaultBase }
+    var baseURL: String {
+        #if DEBUG
+        // Debug builds only: point at a test server with the CHORE_API_BASE
+        // environment variable. Release / TestFlight builds always use the live server.
+        if let override = ProcessInfo.processInfo.environment["CHORE_API_BASE"], !override.isEmpty {
+            return override
+        }
+        #endif
+        return Self.defaultBase
+    }
 
-    // In-memory cache as the source of truth for the current run, mirrored to the
-    // Keychain for persistence across launches. The memory cache matters because an
-    // *unsigned Simulator build* has no keychain entitlement, so `SecItemAdd` fails
-    // (errSecMissingEntitlement) — without this the token would silently never persist.
-    private var inMemoryToken: String?
+    init() {
+        // Older builds kept the parent token in the Keychain across launches.
+        // The parent sign-in now ends when the app closes, so remove any old copy.
+        Keychain.delete("parent_token")
+    }
 
-    var token: String? {
-        get { inMemoryToken ?? Keychain.read("parent_token") }
+    /// The parent sign-in lives only in memory, so closing the app (or the
+    /// 10-minute idle lock) ends it and a kid can't open the app into the
+    /// parent area later.
+    var token: String?
+
+    /// The linked family is remembered across launches. It is not secret on its
+    /// own: parent sign-in still needs the PIN.
+    var family: Family? {
+        get {
+            guard let data = UserDefaults.standard.data(forKey: "family") else { return nil }
+            return try? JSONDecoder().decode(Family.self, from: data)
+        }
         set {
-            inMemoryToken = newValue
-            if let newValue { Keychain.save("parent_token", newValue) }
-            else { Keychain.delete("parent_token") }
+            if let newValue, let data = try? JSONEncoder().encode(newValue) {
+                UserDefaults.standard.set(data, forKey: "family")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "family")
+            }
         }
     }
 }
 
-/// Minimal Keychain wrapper for a single generic-password item per key.
+/// Minimal Keychain wrapper, kept only to clean up items older builds saved.
 enum Keychain {
     private static func baseQuery(_ key: String) -> [String: Any] {
         [
@@ -32,23 +53,6 @@ enum Keychain {
             kSecAttrService as String: "ChoreSlayer",
             kSecAttrAccount as String: key,
         ]
-    }
-
-    static func save(_ key: String, _ value: String) {
-        var q = baseQuery(key)
-        SecItemDelete(q as CFDictionary)
-        q[kSecValueData as String] = Data(value.utf8)
-        SecItemAdd(q as CFDictionary, nil)
-    }
-
-    static func read(_ key: String) -> String? {
-        var q = baseQuery(key)
-        q[kSecReturnData as String] = true
-        q[kSecMatchLimit as String] = kSecMatchLimitOne
-        var out: CFTypeRef?
-        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess,
-              let data = out as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
     }
 
     static func delete(_ key: String) {

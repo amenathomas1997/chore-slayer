@@ -20,14 +20,28 @@ struct ConnectingView: View {
 
 struct RoleView: View {
     @ObservedObject var model: AppModel
+    @State private var confirmForget = false
     var body: some View {
         VStack(spacing: 12) {
             Text("Who's using the app?")
                 .font(.title2.bold())
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityAddTraits(.isHeader)
+            if let fam = model.family {
+                Text("Family: \(fam.name ?? fam.code)")
+                    .foregroundStyle(Color.muted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             BigButton(symbol: "person.fill", title: "I'm a Kid", color: .brand) { model.chooseKid() }
-            BigButton(symbol: "person.2.fill", title: "Parent", color: .brandPurple) { model.chooseParent() }
+            BigButton(symbol: "person.2.fill", title: "Parent / Admin", color: .brandPurple) { model.chooseParent() }
+            Button("Use a different family") { confirmForget = true }
+                .font(.footnote)
+                .padding(.top, 8)
+                .confirmationDialog("Disconnect this device from its family?", isPresented: $confirmForget, titleVisibility: .visible) {
+                    Button("Disconnect", role: .destructive) { model.forgetFamily() }
+                } message: {
+                    Text("You'll need the family code and parent PIN to connect again.")
+                }
         }
     }
 }
@@ -117,6 +131,11 @@ struct BoardView: View {
                         items: board.tasks.filter { $0.slot == slot.id },
                         onToggle: { id in Task { await model.toggle(id) } })
                 }
+                Button("🎉 See my day") { Task { await model.openKidSummary() } }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.green)
+                    .frame(maxWidth: .infinity, minHeight: 48)
+                    .padding(.top, 8)
             }
         } else {
             Text("Loading…")

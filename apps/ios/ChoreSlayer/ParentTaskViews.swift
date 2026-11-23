@@ -185,13 +185,7 @@ struct TaskEditorView: View {
                 Text("Sub-steps that appear after this task is checked.")
                     .font(.footnote).foregroundStyle(Color.muted)
                 ForEach(task.subtasks) { sub in
-                    HStack {
-                        Text("☑️ \(sub.title)").accessibilityLabel(sub.title)
-                        Spacer()
-                        Button("Remove") { Task { await model.removeSubtask(subId: sub.id) } }
-                            .foregroundStyle(Color.danger)
-                            .accessibilityLabel("Remove \(sub.title)")
-                    }
+                    SubtaskRow(model: model, sub: sub)
                 }
                 HStack {
                     TextField("Add a follow-up check", text: $newSub)
@@ -236,5 +230,36 @@ struct TaskEditorView: View {
             title = ""; type = "chore"; emoji = "✅"; mask = "1111111"; slot = "anytime"; time = ""
         }
         newSub = ""
+    }
+}
+
+
+/// One follow-up check: rename it in place, or remove it.
+private struct SubtaskRow: View {
+    @ObservedObject var model: AppModel
+    let sub: ParentSub
+    @State private var title: String = ""
+    var body: some View {
+        HStack {
+            Text("☑️").accessibilityHidden(true)
+            TextField("Follow-up check", text: $title)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Follow-up check")
+                .onSubmit { save() }
+            if trimmed != sub.title && !trimmed.isEmpty {
+                Button("Save") { save() }
+                    .accessibilityLabel("Save follow-up check")
+            }
+            Button("Remove") { Task { await model.removeSubtask(subId: sub.id) } }
+                .foregroundStyle(Color.danger)
+                .accessibilityLabel("Remove \(sub.title)")
+        }
+        .onAppear { title = sub.title }
+        .onChange(of: sub.title) { title = $0 }
+    }
+    private var trimmed: String { title.trimmingCharacters(in: .whitespaces) }
+    private func save() {
+        guard !trimmed.isEmpty, trimmed != sub.title else { return }
+        Task { await model.renameSubtask(subId: sub.id, title: trimmed) }
     }
 }
