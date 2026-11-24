@@ -21,6 +21,10 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -54,9 +58,9 @@ fun ConnectDeviceScreen(m: AppModel) {
     var create by rememberSaveable { mutableStateOf(true) }
     Title("Welcome to Chore Slayer")
     Muted("Set up your family to get started.")
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        SelectChip("✨ Create a family", create, "Create a family") { create = true }
-        SelectChip("🔗 Connect this device", !create, "Connect this device") { create = false }
+    ChoiceGroup("What would you like to do?") {
+        RadioChip("Create a family", create, icon = "✨") { create = true }
+        RadioChip("Connect this device", !create, icon = "🔗") { create = false }
     }
     if (create) CreateFamilyForm(m) else ConnectFamilyForm(m)
 }
@@ -66,20 +70,26 @@ private fun CreateFamilyForm(m: AppModel) {
     var name by rememberSaveable { mutableStateOf("") }
     var pin by rememberSaveable { mutableStateOf("") }
     var pin2 by rememberSaveable { mutableStateOf("") }
-    var problem by remember { mutableStateOf<String?>(null) }
+    // Which field is wrong ("pin" or "pin2") and why; the error shows under it and focus moves there.
+    var problem by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var tries by remember { mutableStateOf(0) }
+    val pinFocus = remember { FocusRequester() }
+    val pin2Focus = remember { FocusRequester() }
+    LaunchedEffect(tries) { when (problem?.first) { "pin" -> pinFocus.requestFocus(); "pin2" -> pin2Focus.requestFocus() } }
     SectionHeader("Create your family")
-    Muted("Choose a parent PIN (4–8 digits). You'll get a Family Code to add more devices, sign in on the web, or recover.")
+    Muted("Choose a parent PIN. You'll get a Family Code to add more devices, sign in on the web, or recover.")
     Field(name, { name = it }, "Family name (optional)")
-    PinField(pin, { pin = it }, "Parent PIN")
-    PinField(pin2, { pin2 = it }, "Confirm PIN")
-    problem?.let { Banner(it, true) { problem = null } }
+    PinField(pin, { pin = it; if (problem?.first == "pin") problem = null }, "Parent PIN",
+        error = problem?.takeIf { it.first == "pin" }?.second, focus = pinFocus)
+    PinField(pin2, { pin2 = it; if (problem?.first == "pin2") problem = null }, "Confirm PIN",
+        error = problem?.takeIf { it.first == "pin2" }?.second, focus = pin2Focus)
     PrimaryButton("Create family", enabled = !m.busy) {
         problem = when {
-            pin.length < 4 -> "PIN must be 4 to 8 digits."
-            pin != pin2 -> "The two PINs do not match."
+            pin.length < 4 -> "pin" to "PIN must be 4 to 8 digits."
+            pin != pin2 -> "pin2" to "The two PINs do not match."
             else -> null
         }
-        if (problem == null) m.createFamily(name.trim(), pin)
+        if (problem == null) m.createFamily(name.trim(), pin) else tries++
     }
 }
 
@@ -87,11 +97,14 @@ private fun CreateFamilyForm(m: AppModel) {
 private fun ConnectFamilyForm(m: AppModel) {
     var code by rememberSaveable { mutableStateOf("") }
     var pin by rememberSaveable { mutableStateOf("") }
+    val pinFocus = remember { FocusRequester() }
+    val err = m.fieldError?.takeIf { it.field == "pin" }
+    LaunchedEffect(err?.seq) { if (err != null) pinFocus.requestFocus() }
     SectionHeader("Connect this device")
     Muted("Enter your Family Code and parent PIN to link this device to an existing family.")
     Field(code, { code = it.uppercase() }, "Family code",
         keyboard = KeyboardOptions(capitalization = KeyboardCapitalization.Characters, autoCorrect = false))
-    PinField(pin, { pin = it }, "Parent PIN")
+    PinField(pin, { pin = it }, "Parent PIN", error = err?.message, focus = pinFocus)
     PrimaryButton("Connect", enabled = !m.busy && code.isNotBlank() && pin.length >= 4) { m.connectDevice(code.trim(), pin) }
 }
 
@@ -99,6 +112,7 @@ private fun ConnectFamilyForm(m: AppModel) {
 @Composable
 fun FamilyCodeDialog(code: String, onDone: () -> Unit) {
     val ctx = LocalContext.current
+    var copied by remember { mutableStateOf(false) }
     AlertDialog(
         onDismissRequest = onDone,
         title = { Text("Your Family Code") },
@@ -111,7 +125,11 @@ fun FamilyCodeDialog(code: String, onDone: () -> Unit) {
                 TextButton(onClick = {
                     (ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
                         .setPrimaryClip(ClipData.newPlainText("Family code", code))
+                    copied = true
                 }) { Text("Copy code") }
+                // Always composed, so "Copied" is a text change the polite live region announces.
+                Text(if (copied) "Copied" else "", color = Palette.goodGreen, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
                 Muted("From now on, your PIN unlocks the parent area on this device.")
             }
         },
@@ -124,19 +142,25 @@ fun ChangePinScreen(m: AppModel) {
     var current by rememberSaveable { mutableStateOf("") }
     var new1 by rememberSaveable { mutableStateOf("") }
     var new2 by rememberSaveable { mutableStateOf("") }
-    var problem by remember { mutableStateOf<String?>(null) }
+    // Local problems ("new1", "new2") and the server's wrong-current-PIN answer both show under their field.
+    var problem by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var tries by remember { mutableStateOf(0) }
+    val focus = remember { mapOf("currentPin" to FocusRequester(), "new1" to FocusRequester(), "new2" to FocusRequester()) }
+    val server = m.fieldError?.takeIf { it.field == "currentPin" }
+    LaunchedEffect(tries) { problem?.let { focus[it.first]?.requestFocus() } }
+    LaunchedEffect(server?.seq) { if (server != null) focus["currentPin"]?.requestFocus() }
+    fun err(f: String) = problem?.takeIf { it.first == f }?.second
     Title("Change PIN")
-    PinField(current, { current = it }, "Current PIN")
-    PinField(new1, { new1 = it }, "New PIN")
-    PinField(new2, { new2 = it }, "Confirm new PIN")
-    problem?.let { Banner(it, true) { problem = null } }
+    PinField(current, { current = it; m.fieldError = null }, "Current PIN", error = server?.message, focus = focus["currentPin"])
+    PinField(new1, { new1 = it; if (problem?.first == "new1") problem = null }, "New PIN", error = err("new1"), focus = focus["new1"])
+    PinField(new2, { new2 = it; if (problem?.first == "new2") problem = null }, "Confirm new PIN", error = err("new2"), focus = focus["new2"])
     PrimaryButton("Change PIN", enabled = !m.busy && current.length >= 4) {
         problem = when {
-            new1.length < 4 -> "New PIN must be 4–8 digits."
-            new1 != new2 -> "The two new PINs do not match."
+            new1.length < 4 -> "new1" to "New PIN must be 4 to 8 digits."
+            new1 != new2 -> "new2" to "The two new PINs do not match."
             else -> null
         }
-        if (problem == null) m.changePin(current, new1)
+        if (problem == null) m.changePin(current, new1) else tries++
     }
 }
 
@@ -145,14 +169,18 @@ fun ChangePinScreen(m: AppModel) {
 fun DeleteFamilyScreen(m: AppModel) {
     var pin by rememberSaveable { mutableStateOf("") }
     var confirming by remember { mutableStateOf(false) }
+    val pinFocus = remember { FocusRequester() }
+    val err = m.fieldError?.takeIf { it.field == "pin" }
+    LaunchedEffect(err?.seq) { if (err != null) pinFocus.requestFocus() }
     Title("Delete family")
     Text("This permanently deletes your family account, every child, all tasks, history and reports, on every device and on the web. It cannot be undone.")
-    PinField(pin, { pin = it }, "Parent PIN")
+    PinField(pin, { pin = it; m.fieldError = null }, "Parent PIN", error = err?.message, focus = pinFocus)
     DangerButton("Delete everything", enabled = !m.busy && pin.length >= 4) { confirming = true }
     if (confirming) {
         AlertDialog(
             onDismissRequest = { confirming = false },
             title = { Text("Delete this family and all its data?") },
+            text = { Text("Every child, task, check-off and report is erased on every device. This can't be undone.") },
             confirmButton = { TextButton(onClick = { confirming = false; m.deleteFamily(pin) }) { Text("Delete forever", color = Palette.danger) } },
             dismissButton = { TextButton(onClick = { confirming = false }) { Text("Cancel") } },
         )
@@ -173,11 +201,7 @@ fun NotificationsScreen(m: AppModel) {
     Text("Get alerts on this device:")
     Text("• when a kid finishes everything on their list for the day")
     Text("• once in the evening if chores are still left to do")
-    Row(Modifier.fillMaxWidth().heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text("Send me parent alerts", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-        Switch(checked = on, onCheckedChange = { on = it },
-            modifier = Modifier.semantics { contentDescription = "Send me parent alerts" })
-    }
+    SwitchRow("Send me parent alerts", on) { on = it }
     Muted("Kids turn on their own chore reminders from their board after they sign in.")
     if (m.pushAllowed == false) {
         Text("Notifications are turned off for Chore Slayer. Turn them on in the phone's Settings first.",

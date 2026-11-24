@@ -73,28 +73,51 @@ object Push {
 
     // ---- notifications ----
 
-    const val CHANNEL = "chores"
+    /** Kid chore reminders: default importance, so they can be made quiet separately in Settings. */
+    const val CHANNEL_KID = "kid_reminders"
+    /** Parent alerts (a kid finished, evening nudge): high importance. */
+    const val CHANNEL_PARENT = "parent_alerts"
+    const val EXTRA_CHILD_ID = "childId"
+    const val EXTRA_TYPE = "type"
 
-    fun createChannel(c: Context) {
+    /** Server message types: "reminder" is for a kid; "finished" and "nudge" are parent alerts. */
+    fun channelFor(type: String?) = if (type == "reminder" || type == null) CHANNEL_KID else CHANNEL_PARENT
+
+    fun createChannels(c: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        c.getSystemService(NotificationManager::class.java)?.createNotificationChannel(
-            NotificationChannel(CHANNEL, "Chore reminders and alerts", NotificationManager.IMPORTANCE_HIGH)
-                .apply { description = "Chore reminders for kids, and alerts for parents." })
+        val nm = c.getSystemService(NotificationManager::class.java) ?: return
+        nm.createNotificationChannel(
+            NotificationChannel(CHANNEL_KID, "Kid chore reminders", NotificationManager.IMPORTANCE_DEFAULT)
+                .apply { description = "A reminder on this device when each of a kid's chores is due." })
+        nm.createNotificationChannel(
+            NotificationChannel(CHANNEL_PARENT, "Parent alerts", NotificationManager.IMPORTANCE_HIGH)
+                .apply { description = "When a kid finishes their list, and an evening note if chores are left." })
+        // The old single channel from version 1.1.
+        runCatching { nm.deleteNotificationChannel("chores") }
     }
 
-    fun show(c: Context, title: String, body: String, tag: String) {
+    fun show(c: Context, title: String, body: String, tag: String, msgType: String?, childId: String?) {
         if (!allowed(c)) return
-        createChannel(c)
-        val open = PendingIntent.getActivity(
-            c, tag.hashCode(),
-            Intent(c, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+        createChannels(c)
+        val channel = channelFor(msgType)
+        // SINGLE_TOP (plus launchMode singleTop) brings the running app forward via onNewIntent
+        // instead of restarting it, so a signed-in kid stays signed in.
+        val intent = Intent(c, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            .apply {
+                msgType?.let { putExtra(EXTRA_TYPE, it) }
+                childId?.takeIf { it.isNotEmpty() }?.let { putExtra(EXTRA_CHILD_ID, it) }
+            }
+        val open = PendingIntent.getActivity(c, tag.hashCode(), intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val n = NotificationCompat.Builder(c, CHANNEL)
+        val n = NotificationCompat.Builder(c, channel)
             .setSmallIcon(R.drawable.ic_stat_chore)
             .setContentTitle(title)
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setPriority(if (channel == CHANNEL_PARENT) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT)
+            .setCategory(NotificationCompat.CATEGORY_REMINDER)
+            .setOnlyAlertOnce(true)
             .setAutoCancel(true)
             .setContentIntent(open)
             .build()
@@ -113,6 +136,6 @@ class PushService : FirebaseMessagingService() {
         val title = d["title"] ?: return
         val body = d["body"] ?: ""
         val tag = (d["type"] ?: "chore") + "-" + (d["childId"] ?: "") + "-" + title.hashCode()
-        Push.show(applicationContext, title, body, tag)
+        Push.show(applicationContext, title, body, tag, d["type"], d["childId"])
     }
 }

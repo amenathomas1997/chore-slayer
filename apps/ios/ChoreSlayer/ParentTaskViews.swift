@@ -25,16 +25,65 @@ struct SelectChip: View {
                 .overlay(Capsule().strokeBorder(selected ? Color.clear : Color.primary.opacity(0.25), lineWidth: 1))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(a11yLabel ?? label)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityAddTraits(selected ? .isSelected : .isButton)
+        .accessibilityLabel(a11yLabel ?? plainSpoken(label))
+        // One choice of a group: a button, marked selected when chosen.
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+    }
+}
+
+/// An on/off chip in a multi-select group (days of the week).
+struct ToggleChip: View {
+    let label: String
+    let isOn: Bool
+    let a11yLabel: String
+    var inputLabels: [String] = []
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                // Shape, not only colour, shows which days are on.
+                Image(systemName: isOn ? "checkmark" : "circle.dashed").font(.caption.weight(.bold))
+                Text(label)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            .frame(minHeight: 44)
+            .background(isOn ? Color.brandFill : Color(.secondarySystemBackground))
+            .foregroundStyle(isOn ? Color.white : Color.primary)
+            .clipShape(Capsule())
+            .overlay(Capsule().strokeBorder(isOn ? Color.clear : Color.primary.opacity(0.25), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(a11yLabel)
+        .accessibilityValue(isOn ? "on" : "off")
+        .accessibilityInputLabels(inputLabels.isEmpty ? [a11yLabel] : inputLabels)
+        .modifier(ToggleTrait())
     }
 }
 
 func scheduleSummary(_ t: ParentTask) -> String {
     let typ = t.type == "activity" ? "Activity" : "Chore"
-    let time = t.timeOfDay.map { " · \($0)" } ?? ""
+    let time = t.timeOfDay.map { " · \(displayTime($0))" } ?? ""
     return "\(typ) · \(daysSummary(t.daysOfWeek)) · \(t.timeSlot.capitalized)\(time)"
+}
+
+func scheduleSpoken(_ t: ParentTask) -> String {
+    let typ = t.type == "activity" ? "Activity" : "Chore"
+    let time = t.timeOfDay.map { " at \(displayTime($0))" } ?? ""
+    return "\(typ), \(daysSpoken(t.daysOfWeek)), \(t.timeSlot.capitalized)\(time)"
+}
+
+func daysSpoken(_ mask: String) -> String {
+    guard mask.count == 7 else { return "some days" }
+    switch mask {
+    case "1111111": return "every day"
+    case "0111110": return "weekdays"
+    case "1000001": return "weekends"
+    default:
+        let names = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+        let chars = Array(mask)
+        let on = (0..<7).compactMap { chars[$0] == "1" ? names[$0] : nil }
+        return on.isEmpty ? "no days" : on.joined(separator: ", ")
+    }
 }
 
 func daysSummary(_ mask: String) -> String {
@@ -95,7 +144,7 @@ struct TasksView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityElement(children: .combine)
-                .accessibilityLabel("\(task.title). \(scheduleSummary(task))"
+                .accessibilityLabel("\(task.title). \(scheduleSpoken(task))"
                     + (task.subtasks.isEmpty ? "" : ". \(task.subtasks.count) follow-up check\(task.subtasks.count == 1 ? "" : "s")"))
                 .accessibilityHint("Edit")
                 .accessibilityAddTraits(.isButton)
@@ -114,6 +163,8 @@ struct TaskEditorView: View {
     @FocusState private var keyboardFocus: SubField?
     /// VoiceOver focus: moved to the next row (or the add field) after a removal.
     @AccessibilityFocusState private var voiceOverFocus: SubField?
+    /// Shown under the title field when Save is tapped with no title.
+    @State private var titleError: String?
 
     private let slots = ["morning", "midday", "afternoon", "evening", "anytime"]
     private let dow = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"]
@@ -130,24 +181,32 @@ struct TaskEditorView: View {
             Text(existing == nil ? "Add task / activity" : "Edit task")
                 .font(.title2.bold()).screenHeading()
 
-            TextField("Title", text: draft.title).textFieldStyle(.roundedBorder).accessibilityLabel("Title")
+            LabeledField(title: "Title", error: titleError) {
+                TextField("Title", text: draft.title, prompt: Text(""))
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel("Title")
+                    .focused($keyboardFocus, equals: .title)
+                    .accessibilityFocused($voiceOverFocus, equals: .title)
+            }
 
             sectionHeader("Type")
             AdaptiveStack(spacing: 8) {
                 SelectChip(label: "✅ Chore", selected: model.taskDraft.type == "chore", a11yLabel: "Chore") { model.taskDraft.type = "chore" }
                 SelectChip(label: "⭐ Activity", selected: model.taskDraft.type == "activity", a11yLabel: "Activity") { model.taskDraft.type = "activity" }
             }
+            .choiceGroup("Type")
 
-            sectionHeader("Icon")
-            TextField("Emoji", text: draft.emoji).textFieldStyle(.roundedBorder).accessibilityLabel("Emoji")
+            LabeledTextField(title: "Icon (one emoji)", text: draft.emoji)
 
             sectionHeader("Repeats on")
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: dynamicTypeSize.isAccessibilitySize ? 120 : 44), spacing: 6)],
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: dynamicTypeSize.isAccessibilitySize ? 140 : 64), spacing: 6)],
                       alignment: .leading, spacing: 6) {
                 ForEach(0..<7, id: \.self) { i in
-                    SelectChip(label: dow[i], selected: isDayOn(i), a11yLabel: dowFull[i]) { toggleDay(i) }
+                    ToggleChip(label: dow[i], isOn: isDayOn(i), a11yLabel: dowFull[i],
+                               inputLabels: [dowFull[i], String(dowFull[i].prefix(3))]) { toggleDay(i) }
                 }
             }
+            .choiceGroup("Repeats on")
             AdaptiveStack {
                 Button("Every day") { model.taskDraft.mask = "1111111" }
                 Button("Weekdays") { model.taskDraft.mask = "0111110" }
@@ -155,17 +214,22 @@ struct TaskEditorView: View {
             }.font(.footnote)
 
             sectionHeader("Time of day")
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack {
-                    ForEach(slots, id: \.self) { s in
-                        SelectChip(label: s.capitalized, selected: model.taskDraft.slot == s) { model.taskDraft.slot = s }
-                    }
+            // Wraps onto more lines at large text sizes instead of scrolling sideways.
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: dynamicTypeSize.isAccessibilitySize ? 220 : 110), spacing: 6)],
+                      alignment: .leading, spacing: 6) {
+                ForEach(slots, id: \.self) { s in
+                    SelectChip(label: s.capitalized, selected: model.taskDraft.slot == s) { model.taskDraft.slot = s }
                 }
             }
-            TextField("Specific time (HH:MM, optional)", text: draft.time)
-                .textFieldStyle(.roundedBorder)
-                .keyboardType(.numbersAndPunctuation)
-                .accessibilityLabel("Specific time, optional")
+            .choiceGroup("Time of day")
+            Toggle("Set a specific time", isOn: Binding(
+                get: { !model.taskDraft.time.isEmpty },
+                set: { model.taskDraft.time = $0 ? defaultTime(forSlot: model.taskDraft.slot) : "" }))
+                .frame(minHeight: 44)
+            if !model.taskDraft.time.isEmpty {
+                DatePicker("Time", selection: timeBinding(draft.time), displayedComponents: .hourAndMinute)
+                    .frame(minHeight: 44)
+            }
 
             // Follow-up checks come before "Save changes", so moving top to
             // bottom reaches them before leaving the editor.
@@ -174,10 +238,10 @@ struct TaskEditorView: View {
                 followUps(task)
             }
 
-            Button(existing == nil ? "Add" : "Save changes") { Task { await model.saveTask() } }
+            Button(existing == nil ? "Add" : "Save changes") { save() }
                 .primaryButton()
                 .frame(maxWidth: .infinity, minHeight: 48)
-                .disabled(model.busy || trimmedTitle.isEmpty)
+                .disabled(model.busy)
 
             if existing != nil {
                 Button("Delete this task", role: .destructive) { confirmDelete = true }
@@ -188,7 +252,10 @@ struct TaskEditorView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .onChange(of: model.taskDraft) { _ in model.markParentActivity() }
+        .onChange(of: model.taskDraft) { _ in
+            model.markParentActivity()
+            if titleError != nil && !trimmedTitle.isEmpty { titleError = nil }
+        }
         .alert("Delete this task?", isPresented: $confirmDelete) {
             Button("Delete", role: .destructive) { if let t = existing { Task { await model.deleteTask(t) } } }
             Button("Cancel", role: .cancel) {}
@@ -211,6 +278,7 @@ struct TaskEditorView: View {
                 busy: model.busy,
                 onSave: { t in Task { await model.renameSubtask(subId: sub.id, title: t) } },
                 onRemove: { remove(sub, at: i, in: task) },
+                onMove: { up in move(sub, up: up) },
                 keyboardFocus: $keyboardFocus,
                 voiceOverFocus: $voiceOverFocus)
         }
@@ -226,6 +294,32 @@ struct TaskEditorView: View {
                 .frame(minHeight: 44)
                 .accessibilityLabel("Add follow-up check")
                 .disabled(model.busy || trimmedNewSub.isEmpty)
+        }
+    }
+
+    /// Save, or say next to the title field why it can't be saved yet.
+    private func save() {
+        guard !trimmedTitle.isEmpty else {
+            titleError = "Enter a title for the task."
+            model.error = "Enter a title for the task."
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                keyboardFocus = .title
+                voiceOverFocus = .title
+            }
+            return
+        }
+        titleError = nil
+        Task { await model.saveTask() }
+    }
+
+    private func move(_ sub: ParentSub, up: Bool) {
+        Task {
+            if let msg = await model.moveSubtask(subId: sub.id, up: up) {
+                // Keep VoiceOver on the moved check's field in its new place,
+                // then say where it went (queued after the field is read).
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { voiceOverFocus = .sub(sub.id) }
+                Announcer.say(msg, after: 0.6)
+            }
         }
     }
 
@@ -262,6 +356,7 @@ struct TaskEditorView: View {
 }
 
 private enum SubField: Hashable {
+    case title
     case sub(String)
     case newSub
 }
@@ -276,6 +371,7 @@ private struct SubtaskRow: View {
     let busy: Bool
     let onSave: (String) -> Void
     let onRemove: () -> Void
+    let onMove: (_ up: Bool) -> Void
     var keyboardFocus: FocusState<SubField?>.Binding
     var voiceOverFocus: AccessibilityFocusState<SubField?>.Binding
 
@@ -284,17 +380,41 @@ private struct SubtaskRow: View {
     private var changed: Bool { !trimmed.isEmpty && trimmed != sub.title }
 
     var body: some View {
-        AdaptiveStack(spacing: 8) {
+        // Field on its own line with its buttons under it, so the field never gets
+        // squeezed and button words never wrap mid-word.
+        VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text("☑️").accessibilityHidden(true)
                 TextField(position, text: $title)
                     .textFieldStyle(.roundedBorder)
                     .accessibilityLabel(position)
                     .focused(keyboardFocus, equals: .sub(sub.id))
                     .accessibilityFocused(voiceOverFocus, equals: .sub(sub.id))
                     .onSubmit { save() }
+                    .accessibilityActions {
+                        if index > 0 { Button("Move up") { onMove(true) } }
+                        if index + 1 < count { Button("Move down") { onMove(false) } }
+                    }
             }
-            HStack(spacing: 16) {
+            AdaptiveStack(spacing: 16) {
+                // Hidden at the ends: the first check can't move up, the last can't move down.
+                if index > 0 {
+                    Button { onMove(true) } label: {
+                        Label("Up", systemImage: "arrow.up").fixedSize()
+                    }
+                    .frame(minHeight: 44)
+                    .accessibilityLabel("Move up: \(sub.title)")
+                    .accessibilityInputLabels(["Move up", "Up"])
+                    .disabled(busy)
+                }
+                if index + 1 < count {
+                    Button { onMove(false) } label: {
+                        Label("Down", systemImage: "arrow.down").fixedSize()
+                    }
+                    .frame(minHeight: 44)
+                    .accessibilityLabel("Move down: \(sub.title)")
+                    .accessibilityInputLabels(["Move down", "Down"])
+                    .disabled(busy)
+                }
                 if changed {
                     Button("Save") { save() }
                         .frame(minHeight: 44)
@@ -302,6 +422,7 @@ private struct SubtaskRow: View {
                         .disabled(busy)
                 }
                 Button("Remove") { onRemove() }
+                    .fixedSize()
                     .frame(minHeight: 44)
                     .foregroundStyle(Color.danger)
                     .accessibilityLabel("Remove follow-up check \(index + 1): \(sub.title)")

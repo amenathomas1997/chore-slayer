@@ -51,6 +51,10 @@ final class AppModel: ObservableObject {
     @Published var daySchedule: DaySchedule?
     @Published var overrideDay = ""
     @Published var editingOverride: DayTaskSchedule?
+    /// "Discard changes?" before Back leaves an editor with unsaved edits.
+    @Published var confirmDiscard = false
+    /// Set by the child editor, whose fields live in the view.
+    @Published var childEditorDirty = false
 
     private let session = Session()
     private lazy var api = Api(session)
@@ -75,6 +79,9 @@ final class AppModel: ObservableObject {
         family = session.family
         Push.shared.onTokenChange = { [weak self] new, old in
             Task { await self?.reRegister(newToken: new, oldToken: old) }
+        }
+        Push.shared.onReminderTap = { [weak self] childId in
+            Task { await self?.openFromReminder(childId: childId) }
         }
         // Count every kind of input for the parent idle lock, not only touches:
         // typing (on-screen or hardware keyboard, dictation, Voice Control) and
@@ -164,7 +171,38 @@ final class AppModel: ObservableObject {
     func chooseKid() { error = nil; notice = nil; screen = .kidLogin }
     func chooseParent() { error = nil; notice = nil; screen = .parentLogin }
 
+    /// Back button and the VoiceOver escape gesture: asks first when leaving
+    /// an editor would lose unsaved changes.
+    func requestBack() {
+        if hasUnsavedChanges { confirmDiscard = true } else { back() }
+    }
+
+    /// The current editor has edits that haven't been saved.
+    var hasUnsavedChanges: Bool {
+        switch screen {
+        case .taskEditor:
+            let base = editingTask.map { TaskDraft($0) } ?? TaskDraft(childId: taskDraft.childId)
+            var d = taskDraft
+            // A follow-up rename typed back to its saved title isn't a change.
+            d.subTitles = d.subTitles.filter { id, t in
+                let saved = editingTask?.subtasks.first { $0.id == id }?.title
+                return t.trimmingCharacters(in: .whitespaces) != saved
+            }
+            d.newSub = d.newSub.trimmingCharacters(in: .whitespaces)
+            return d != base
+        case .dailyReport:
+            guard let b = reportBundle, let c = reportDraft.childId else { return false }
+            return reportDraft != ReportDraft(childId: c, bundle: b)
+        case .childEditor:
+            return childEditorDirty
+        default:
+            return false
+        }
+    }
+
     func back() {
+        confirmDiscard = false
+        childEditorDirty = false
         error = nil
         notice = nil
         switch screen {
@@ -206,6 +244,16 @@ final class AppModel: ObservableObject {
             self.board = try await self.api.daySummary(childId: c.id)
             self.screen = .kidSummary
         }
+    }
+
+    /// A kid reminder notification was tapped: open that kid's board if they
+    /// are the kid signed in on this device.
+    func openFromReminder(childId: String) async {
+        guard !isParent, let c = child, c.id == childId else { return }
+        if let b = try? await api.daySummary(childId: c.id) { board = b }
+        error = nil
+        notice = nil
+        screen = .kidBoard
     }
 
     /// "Switch user" on a kid's board.
@@ -586,6 +634,22 @@ final class AppModel: ObservableObject {
         return ok
     }
 
+    /// Moves a follow-up check one place. Returns what to announce ("Moved to
+    /// position 2 of 3."), or nil if it failed. The caller announces it after
+    /// moving VoiceOver focus, so the focus change doesn't cut it off.
+    func moveSubtask(subId: String, up: Bool) async -> String? {
+        guard let c = managedChild else { return nil }
+        let keepId = editingTask?.id
+        var msg: String?
+        await run {
+            let r = try await self.api.moveSubtask(id: subId, up: up)
+            self.parentTasks = try await self.api.parentTasks(childId: c.id)
+            self.editingTask = self.parentTasks.first { $0.id == keepId } ?? self.editingTask
+            msg = "Moved to position \(r.position) of \(r.count)."
+        }
+        return msg
+    }
+
     func renameSubtask(subId: String, title: String) async {
         guard let c = managedChild, !title.isEmpty else { return }
         let keepId = editingTask?.id
@@ -631,8 +695,10 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func saveReport() async {
-        guard let c = managedChild else { return }
+    /// Returns true when the report was saved.
+    @discardableResult
+    func saveReport() async -> Bool {
+        guard let c = managedChild else { return false }
         let day = reportBundle?.day
         let d = reportDraft
         func clean(_ v: String) -> String { v.trimmingCharacters(in: .whitespaces) }
@@ -643,6 +709,7 @@ final class AppModel: ObservableObject {
             self.reportBundle = try await self.api.getReport(childId: c.id, day: day)
             self.notice = "Report saved."
         }
+        return error == nil
     }
 
     // MARK: parent — BHIS report
@@ -679,8 +746,10 @@ final class AppModel: ObservableObject {
             try await self.api.setOverride(taskId: taskId, day: day, timeSlot: timeSlot, timeOfDay: timeOfDay, skipped: skipped)
             self.daySchedule = try await self.api.daySchedule(childId: c.id, day: day)
             let name = self.editingOverride?.title ?? "Task"
+            let follow = self.editingOverride?.subtaskCount ?? 0
             self.editingOverride = nil
-            self.notice = skipped ? "\(name) skipped on \(day)." : "\(name) changed for \(day)."
+            let skippedSubs = follow == 0 ? "" : (follow == 1 ? " Its follow-up check is skipped too." : " Its \(follow) follow-up checks are skipped too.")
+            self.notice = skipped ? "\(name) skipped on \(displayDay(day)).\(skippedSubs)" : "\(name) changed for \(displayDay(day))."
             self.screen = .adjustDay
         }
     }
@@ -693,7 +762,7 @@ final class AppModel: ObservableObject {
             self.daySchedule = try await self.api.daySchedule(childId: c.id, day: day)
             let name = self.editingOverride?.title ?? "Task"
             self.editingOverride = nil
-            self.notice = "\(name) is back to its recurring schedule on \(day)."
+            self.notice = "\(name) is back to its recurring schedule on \(displayDay(day))."
             self.screen = .adjustDay
         }
     }
@@ -703,7 +772,7 @@ final class AppModel: ObservableObject {
         await run {
             let r = try await self.api.bhis(childId: c.id, from: from, to: to)
             self.bhisReport = r
-            self.notice = "BHIS report ready: \(r.range.from) to \(r.range.to)."
+            self.notice = "BHIS report ready: \(displayDay(r.range.from)) to \(displayDay(r.range.to))."
         }
     }
 

@@ -2,7 +2,6 @@ package com.at365.choretracker
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,6 +23,11 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateMapOf
@@ -42,35 +46,36 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 @Composable
 fun ParentLoginScreen(m: AppModel) {
     var pin by rememberSaveable { mutableStateOf("") }
+    val err = m.fieldError?.takeIf { it.field == "pin" }
+    val pinFocus = remember { FocusRequester() }
+    LaunchedEffect(err?.seq) { if (err != null) pinFocus.requestFocus() }
     Title("Parent sign-in")
-    PinField(pin, { pin = it }, "PIN")
+    PinField(pin, { pin = it; m.fieldError = null }, "PIN", error = err?.message, focus = pinFocus)
     PrimaryButton("Sign in", enabled = !m.busy && pin.length >= 4) { m.parentLogin(pin) }
 }
 
 @Composable
 fun ChildrenScreen(m: AppModel) {
     Title("Children")
-    PrimaryButton("➕ Add a child") { m.addChildStart() }
+    PrimaryButton("Add a child", icon = "➕") { m.addChildStart() }
     if (m.children.isEmpty() && !m.busy) Muted("No children yet.")
     m.children.forEach { c ->
         RowCard("${c.firstName} ${c.lastName}", hint = "manage", onClick = { m.openChildHub(c) }) {
             Text(c.emoji, fontSize = 28.sp, modifier = Modifier.clearAndSetSemantics { })
             Column(Modifier.weight(1f).padding(start = 10.dp)) {
                 Text("${c.firstName} ${c.lastName}", style = MaterialTheme.typography.titleMedium)
-                Muted("Tap to manage")
+                Muted("Manage")
             }
-            Text("›", fontSize = 24.sp, color = Palette.muted)
+            Text("›", fontSize = 24.sp, color = Palette.muted, modifier = Modifier.clearAndSetSemantics { })
         }
     }
 }
@@ -79,15 +84,19 @@ fun ChildrenScreen(m: AppModel) {
 fun ChildHubScreen(m: AppModel) {
     val c = m.managedChild ?: return
     Title("${c.emoji} ${c.firstName} ${c.lastName}", a11y = "${c.firstName} ${c.lastName}")
-    PrimaryButton("📋 Today's board") { m.openBoard(c) }
-    PrimaryButton("✅ Tasks & activities") { m.openTasks() }
-    PrimaryButton("📝 Daily report") { m.openReport() }
-    PrimaryButton("📊 BHIS report") { m.openBhis() }
-    PrimaryButton("📅 Adjust a day") { m.openAdjustDay() }
-    PrimaryButton("✏️ Edit child") { m.editChildStart() }
+    PrimaryButton("Today's board", icon = "📋") { m.openBoard(c) }
+    PrimaryButton("Tasks & activities", icon = "✅") { m.openTasks() }
+    PrimaryButton("Daily report", icon = "📝") { m.openReport() }
+    PrimaryButton("BHIS report", icon = "📊") { m.openBhis() }
+    PrimaryButton("Adjust a day", icon = "📅") { m.openAdjustDay() }
+    PrimaryButton("Edit child", icon = "✏️") { m.editChildStart() }
 }
 
-private val childEmojis = listOf("🙂", "😀", "🦊", "🐱", "🦄", "🐶", "🌟", "🚀", "🦖", "🐢")
+/** Child icons with plain names, so screen readers and voice control (Voice Access, Dragon) can say them. */
+private val childEmojis = listOf(
+    "🙂" to "Smile", "😀" to "Grin", "🦊" to "Fox", "🐱" to "Cat", "🦄" to "Unicorn",
+    "🐶" to "Dog", "🌟" to "Star", "🚀" to "Rocket", "🦖" to "Dinosaur", "🐢" to "Turtle",
+)
 private val childColors = listOf("#5b8def", "#e8618c", "#33b679", "#f5a623", "#6d4fc0", "#16a3b8")
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -99,31 +108,41 @@ fun ChildEditorScreen(m: AppModel) {
     var emoji by rememberSaveable(existing?.id) { mutableStateOf(existing?.emoji ?: "🙂") }
     var color by rememberSaveable(existing?.id) { mutableStateOf(existing?.color ?: "#5b8def") }
     var confirmDelete by remember { mutableStateOf(false) }
+    var confirmRemove by remember { mutableStateOf(false) }
+    val changed = if (existing == null) first.isNotBlank() || last.isNotBlank() || emoji != "🙂" || color != "#5b8def"
+        else first != existing.firstName || last != existing.lastName || emoji != existing.emoji || color != existing.color
+    SideEffect { m.unsavedChanges = changed }
 
     Title(if (existing == null) "Add a child" else "Edit child")
     Field(first, { first = it }, "First name")
     Field(last, { last = it }, "Last name")
-    SectionHeader("Icon")
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        childEmojis.forEach { e ->
+    ChoiceGroup("Icon") {
+        childEmojis.forEach { (e, name) ->
+            val sel = emoji == e
             Box(
                 Modifier.size(52.dp).clip(RoundedCornerShape(10.dp))
-                    .background(if (emoji == e) Palette.brand.copy(alpha = 0.25f) else Palette.card)
-                    .clickable(role = Role.Button) { emoji = e }
-                    .semantics { contentDescription = "Icon $e"; selected = emoji == e },
+                    .background(if (sel) Palette.brand.copy(alpha = 0.18f) else Palette.card)
+                    // Selected: a thick brand border and a tick badge, not colour alone.
+                    .border(if (sel) 3.dp else 1.dp, if (sel) Palette.brand else Palette.muted, RoundedCornerShape(10.dp))
+                    .selectable(selected = sel, role = Role.RadioButton) { emoji = e }
+                    .semantics { contentDescription = name },
                 contentAlignment = Alignment.Center,
-            ) { Text(e, fontSize = 26.sp) }
+            ) {
+                Text(e, fontSize = 26.sp, modifier = Modifier.clearAndSetSemantics { })
+                if (sel) CheckBadge(Modifier.align(Alignment.TopEnd).padding(2.dp))
+            }
         }
     }
-    SectionHeader("Color")
-    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+    ChoiceGroup("Color") {
         childColors.forEach { hex ->
+            val sel = color == hex
             Box(
                 Modifier.size(48.dp).clip(CircleShape).background(hexColor(hex))
-                    .border(if (color == hex) 3.dp else 1.dp, if (color == hex) Color.Black else Color(0x33000000), CircleShape)
-                    .clickable(role = Role.Button) { color = hex }
-                    .semantics { contentDescription = colorName(hex); selected = color == hex },
-            )
+                    .border(1.dp, Palette.muted, CircleShape)
+                    .selectable(selected = sel, role = Role.RadioButton) { color = hex }
+                    .semantics { contentDescription = colorName(hex) },
+                contentAlignment = Alignment.Center,
+            ) { if (sel) CheckBadge(size = 26) }
         }
     }
     PrimaryButton(if (existing == null) "Add child" else "Save changes", enabled = !m.busy && first.isNotBlank() && last.isNotBlank()) {
@@ -131,8 +150,17 @@ fun ChildEditorScreen(m: AppModel) {
     }
     if (existing != null) {
         HorizontalDivider()
-        SecondaryButton("Remove (keep their history)") { m.removeManagedChild(false) }
+        SecondaryButton("Remove (keep their history)") { confirmRemove = true }
         LinkButton("Delete forever", color = Palette.danger) { confirmDelete = true }
+    }
+    if (confirmRemove) {
+        AlertDialog(
+            onDismissRequest = { confirmRemove = false },
+            title = { Text("Remove ${existing?.firstName ?: "this child"}?") },
+            text = { Text("They won't be able to sign in and their chores stop showing. Their history and reports are kept.") },
+            confirmButton = { TextButton(onClick = { confirmRemove = false; m.removeManagedChild(false) }) { Text("Remove", color = Palette.danger) } },
+            dismissButton = { TextButton(onClick = { confirmRemove = false }) { Text("Cancel") } },
+        )
     }
     if (confirmDelete) {
         AlertDialog(
@@ -142,6 +170,15 @@ fun ChildEditorScreen(m: AppModel) {
             confirmButton = { TextButton(onClick = { confirmDelete = false; m.removeManagedChild(true) }) { Text("Delete forever", color = Palette.danger) } },
             dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } },
         )
+    }
+}
+
+/** A white tick on a dark disc: marks the selected icon or colour without relying on colour. */
+@Composable
+private fun CheckBadge(modifier: Modifier = Modifier, size: Int = 18) {
+    Box(modifier.size(size.dp).clip(CircleShape).background(Palette.brand).border(1.dp, Color.White, CircleShape)
+        .clearAndSetSemantics { }, contentAlignment = Alignment.Center) {
+        Text("✓", color = Color.White, fontWeight = FontWeight.Bold, fontSize = (size * 0.6f).sp)
     }
 }
 
@@ -156,14 +193,14 @@ fun daysSummary(mask: String): String {
 
 fun scheduleSummary(t: ParentTask): String {
     val typ = if (t.type == "activity") "Activity" else "Chore"
-    return "$typ · ${daysSummary(t.daysOfWeek)} · ${cap(t.timeSlot)}" + (t.timeOfDay?.let { " · $it" } ?: "")
+    return "$typ · ${daysSummary(t.daysOfWeek)} · ${cap(t.timeSlot)}" + (prettyTime(t.timeOfDay)?.let { " · $it" } ?: "")
 }
 
 @Composable
 fun TasksScreen(m: AppModel) {
     Title("Tasks & activities")
     m.managedChild?.let { Muted("for ${it.firstName}") }
-    PrimaryButton("➕ Add task or activity") { m.addTaskStart() }
+    PrimaryButton("Add task or activity", icon = "➕") { m.addTaskStart() }
     if (m.parentTasks.isEmpty() && !m.busy) Muted("No tasks yet.")
     m.parentTasks.forEach { t -> key(t.id) {
         val n = t.subtasks.size
@@ -193,25 +230,51 @@ private val subEditsSaver = listSaver<SnapshotStateMap<String, String>, String>(
 fun TaskEditorScreen(m: AppModel) {
     val existing = m.editingTask
     val key = existing?.id ?: "new"
-    var title by rememberSaveable(key) { mutableStateOf(existing?.title ?: "") }
-    var type by rememberSaveable(key) { mutableStateOf(existing?.type ?: "chore") }
-    var emoji by rememberSaveable(key) { mutableStateOf(existing?.emoji ?: "🧹") }
-    var mask by rememberSaveable(key) { mutableStateOf(existing?.daysOfWeek ?: "1111111") }
-    var slot by rememberSaveable(key) { mutableStateOf(existing?.timeSlot ?: "anytime") }
-    var time by rememberSaveable(key) { mutableStateOf(existing?.timeOfDay ?: "") }
-    var newSub by rememberSaveable(key) { mutableStateOf("") }
+    val childId = m.managedChild?.id ?: existing?.childId ?: ""
+    // Unsaved fields survive the idle lock: they're kept in the model as a draft.
+    val d = m.taskDraft?.takeIf { it.childId == childId && it.taskKey == key }
+    var title by rememberSaveable(key) { mutableStateOf(d?.title ?: existing?.title ?: "") }
+    var type by rememberSaveable(key) { mutableStateOf(d?.type ?: existing?.type ?: "chore") }
+    var emoji by rememberSaveable(key) { mutableStateOf(d?.emoji ?: existing?.emoji ?: "🧹") }
+    var mask by rememberSaveable(key) { mutableStateOf(d?.mask ?: existing?.daysOfWeek ?: "1111111") }
+    var slot by rememberSaveable(key) { mutableStateOf(d?.slot ?: existing?.timeSlot ?: "anytime") }
+    var time by rememberSaveable(key) { mutableStateOf(d?.time ?: existing?.timeOfDay ?: "") }
+    var newSub by rememberSaveable(key) { mutableStateOf(d?.newSub ?: "") }
     // Unsaved follow-up renames (sub id -> typed text); "Save changes" saves these too.
-    val subEdits = rememberSaveable(key, saver = subEditsSaver) { mutableStateMapOf<String, String>() }
+    val subEdits = rememberSaveable(key, saver = subEditsSaver) {
+        mutableStateMapOf<String, String>().apply { d?.subEdits?.let { putAll(it) } }
+    }
     var confirmDelete by remember { mutableStateOf(false) }
+    var titleError by remember(key) { mutableStateOf<String?>(null) }
+    var titleTries by remember { mutableStateOf(0) }
     val active = LocalUserActivity.current
 
+    val titleFocus = remember { FocusRequester() }
+    LaunchedEffect(titleTries) { if (titleError != null) titleFocus.requestFocus() }
     val addFocus = remember { FocusRequester() }
     val rowFocus = remember(key) { mutableMapOf<String, FocusRequester>() }
-    // Where to put focus once the list has updated: a follow-up id, "add", or null.
+    val upFocus = remember(key) { mutableMapOf<String, FocusRequester>() }
+    val downFocus = remember(key) { mutableMapOf<String, FocusRequester>() }
+    // Where to put focus once the list has updated: a follow-up id, "add", "up:<id>", "down:<id>", or null.
     var pendingFocus by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(pendingFocus, existing?.subtasks) {
+    LaunchedEffect(pendingFocus, existing?.subtasks, m.busy) {
         val target = pendingFocus ?: return@LaunchedEffect
-        runCatching { (if (target == "add") addFocus else rowFocus[target])?.requestFocus() }
+        if (m.busy) return@LaunchedEffect   // buttons are disabled until the save finishes
+        val subs = existing?.subtasks.orEmpty()
+        runCatching {
+            when {
+                target == "add" -> addFocus.requestFocus()
+                target.startsWith("up:") || target.startsWith("down:") -> {
+                    // After a move, stay on the same row: the same button if it still works, else the other one.
+                    val id = target.substringAfter(':')
+                    val i = subs.indexOfFirst { it.id == id }
+                    val wantUp = target.startsWith("up:")
+                    val useUp = if (wantUp) i > 0 else i >= subs.size - 1
+                    (if (useUp) upFocus[id] else downFocus[id])?.requestFocus()
+                }
+                else -> rowFocus[target]?.requestFocus()
+            }
+        }
         pendingFocus = null
     }
     LaunchedEffect(key, m.focusAddFollowUp) {
@@ -223,21 +286,28 @@ fun TaskEditorScreen(m: AppModel) {
     }.toMap()
     val dirty = existing == null || title != existing.title || type != existing.type || emoji != existing.emoji ||
         mask != existing.daysOfWeek || slot != existing.timeSlot || time != (existing.timeOfDay ?: "") || renames.isNotEmpty()
+    // Anything Back would lose (a new task only once something was filled in).
+    val unsaved = if (existing == null)
+        title.isNotBlank() || type != "chore" || emoji != "🧹" || mask != "1111111" || slot != "anytime" || time.isNotEmpty()
+    else dirty || newSub.isNotBlank()
+    SideEffect {
+        m.unsavedChanges = unsaved
+        if (unsaved) m.taskDraft = TaskDraft(childId, key, title, type, emoji, mask, slot, time, newSub, subEdits.toMap())
+        else if (m.taskDraft?.taskKey == key) m.taskDraft = null
+    }
 
     Title(if (existing == null) "Add task / activity" else "Edit task")
-    Field(title, { title = it }, "Title")
-    SectionHeader("Type")
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        SelectChip("✅ Chore", type == "chore", "Chore") { type = "chore" }
-        SelectChip("⭐ Activity", type == "activity", "Activity") { type = "activity" }
+    Field(title, { title = it; titleError = null }, "Title", error = titleError, focus = titleFocus)
+    ChoiceGroup("Type") {
+        RadioChip("Chore", type == "chore", icon = "✅") { type = "chore" }
+        RadioChip("Activity", type == "activity", icon = "⭐") { type = "activity" }
     }
     SectionHeader("Icon")
-    Field(emoji, { emoji = it }, "Emoji")
-    SectionHeader("Repeats on")
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Field(emoji, { emoji = it }, "Emoji", supporting = "One emoji, shown next to the title")
+    ChoiceGroup("Repeats on", single = false) {
         (0..6).forEach { i ->
             val on = mask.getOrNull(i) == '1'
-            SelectChip(dow[i], on, dowFull[i]) {
+            CheckChip(dow[i], on, dowFull[i]) {
                 val chars = (if (mask.length == 7) mask else "1111111").toCharArray()
                 chars[i] = if (chars[i] == '1') '0' else '1'
                 mask = String(chars)
@@ -249,17 +319,16 @@ fun TaskEditorScreen(m: AppModel) {
         LinkButton("Weekdays") { mask = "0111110" }
         LinkButton("Weekends") { mask = "1000001" }
     }
-    SectionHeader("Time of day")
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        slotIds.forEach { s -> SelectChip(cap(s), slot == s) { slot = s } }
+    ChoiceGroup("Time of day") {
+        slotIds.forEach { s -> RadioChip(cap(s), slot == s) { slot = s } }
     }
-    Field(time, { time = it }, "Specific time (HH:MM, optional)", keyboard = KeyboardOptions(keyboardType = KeyboardType.Number))
+    TimeField("Specific time", time, noneText = "No specific time") { active(); time = it }
 
     // Follow-ups come before "Save changes", so going top to bottom reaches them before leaving.
     if (existing != null) {
         HorizontalDivider()
         SectionHeader("Follow-up checks")
-        Muted("Sub-steps that appear after this task is checked. Adding or removing one saves straight away.")
+        Muted("Sub-steps that appear after this task is checked. Adding, removing or moving one saves straight away.")
         val subs = existing.subtasks
         subs.forEachIndexed { i, sub ->
             key(sub.id) {
@@ -268,10 +337,17 @@ fun TaskEditorScreen(m: AppModel) {
                     text = subEdits[sub.id] ?: sub.title,
                     onText = { active(); subEdits[sub.id] = it },
                     focus = rowFocus.getOrPut(sub.id) { FocusRequester() },
+                    upFocus = upFocus.getOrPut(sub.id) { FocusRequester() },
+                    downFocus = downFocus.getOrPut(sub.id) { FocusRequester() },
                     onSave = { t -> m.renameSubtask(sub.id, t) { ok -> if (ok) subEdits.remove(sub.id) } },
                     onRemove = {
                         val next = subs.getOrNull(i + 1)?.id ?: "add"
                         m.removeSubtask(sub.id, sub.title) { ok -> if (ok) { subEdits.remove(sub.id); rowFocus.remove(sub.id); pendingFocus = next } }
+                    },
+                    // From a button: focus follows to that row's move button. From TalkBack's actions
+                    // menu: focus is already on the row's field, and key(id) keeps it there.
+                    onMove = { up, fromButton ->
+                        m.moveSubtask(sub.id, up) { ok -> if (ok && fromButton) pendingFocus = (if (up) "up:" else "down:") + sub.id }
                     },
                 )
             }
@@ -293,9 +369,13 @@ fun TaskEditorScreen(m: AppModel) {
         Muted("After you add the task, you can add follow-up checks here.")
     }
 
-    PrimaryButton(if (existing == null) "Add" else "Save changes", enabled = !m.busy && title.isNotBlank() && dirty) {
-        val e = emoji.trim().ifEmpty { if (type == "activity") "⭐" else "🧹" }
-        m.saveTask(existing, title.trim(), type, e, mask, slot, time.trim(), renames) { subEdits.clear() }
+    PrimaryButton(if (existing == null) "Add" else "Save changes", enabled = !m.busy && dirty) {
+        if (title.isBlank()) {
+            titleError = "Enter a title for this task."; titleTries++
+        } else {
+            val e = emoji.trim().ifEmpty { if (type == "activity") "⭐" else "🧹" }
+            m.saveTask(existing, title.trim(), type, e, mask, slot, time.trim(), renames) { subEdits.clear() }
+        }
     }
     if (existing != null && !dirty) Muted("No unsaved changes.")
     if (existing != null) {
@@ -312,21 +392,38 @@ fun TaskEditorScreen(m: AppModel) {
     }
 }
 
-/** One follow-up check: rename it in place (Save, or the keyboard's Done), or remove it. Stacked so it works at large text. */
+/**
+ * One follow-up check: rename it in place (Save, or the keyboard's Done), move it up or down, or
+ * remove it. Stacked so it works at large text. Move up / Move down are also TalkBack actions on the field.
+ */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SubtaskRow(
     sub: ParentSub, index: Int, count: Int, busy: Boolean, text: String, onText: (String) -> Unit,
-    focus: FocusRequester, onSave: (String) -> Unit, onRemove: () -> Unit,
+    focus: FocusRequester, upFocus: FocusRequester, downFocus: FocusRequester,
+    onSave: (String) -> Unit, onRemove: () -> Unit, onMove: (up: Boolean, fromButton: Boolean) -> Unit,
 ) {
     val changed = text.trim().isNotEmpty() && text.trim() != sub.title
     val n = index + 1
+    val canUp = index > 0
+    val canDown = index < count - 1
     Column(Modifier.fillMaxWidth()) {
         OutlinedTextField(text, onText, label = { Text("Follow-up $n of $count") }, singleLine = true,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
             keyboardActions = KeyboardActions(onDone = { if (changed && !busy) onSave(text.trim()) }),
-            modifier = Modifier.fillMaxWidth().focusRequester(focus))
+            modifier = Modifier.fillMaxWidth().focusRequester(focus).semantics {
+                customActions = listOfNotNull(
+                    if (canUp) CustomAccessibilityAction("Move up: ${sub.title}") { if (!busy) onMove(true, false); true } else null,
+                    if (canDown) CustomAccessibilityAction("Move down: ${sub.title}") { if (!busy) onMove(false, false); true } else null,
+                )
+            })
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = { onMove(true, true) }, enabled = !busy && canUp,
+                modifier = Modifier.heightIn(min = 48.dp).focusRequester(upFocus)
+                    .semantics { contentDescription = "Move up: ${sub.title}" }) { Text("Move up") }
+            TextButton(onClick = { onMove(false, true) }, enabled = !busy && canDown,
+                modifier = Modifier.heightIn(min = 48.dp).focusRequester(downFocus)
+                    .semantics { contentDescription = "Move down: ${sub.title}" }) { Text("Move down") }
             if (changed) TextButton(onClick = { onSave(text.trim()) }, enabled = !busy,
                 modifier = Modifier.semantics { contentDescription = "Save follow-up $n" }) { Text("Save") }
             TextButton(onClick = onRemove, enabled = !busy,

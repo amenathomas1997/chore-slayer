@@ -1,9 +1,15 @@
 import SwiftUI
 
+func followUpChecks(_ n: Int) -> String { n == 1 ? "1 follow-up check" : "\(n) follow-up checks" }
+
 func adjustRowLabel(_ t: DayTaskSchedule) -> String {
-    if t.skipped { return "\(t.title), skipped this day" }
+    let n = t.subtaskCount ?? 0
+    if t.skipped {
+        return "\(t.title), skipped this day" + (n > 0 ? ", with its \(followUpChecks(n))" : "")
+    }
     let chg = (t.overrideSlot != nil || t.overrideTime != nil) ? ", changed for this day" : ""
-    return "\(t.title), \(t.effectiveSlot.capitalized)\(t.effectiveTime.map { " at \($0)" } ?? "")\(chg)"
+    let subs = n > 0 ? ", \(followUpChecks(n))" : ""
+    return "\(t.title), \(t.effectiveSlot.capitalized)\(t.effectiveTime.map { " at \(displayTime($0))" } ?? "")\(chg)\(subs)"
 }
 
 struct AdjustDayView: View {
@@ -20,21 +26,22 @@ struct AdjustDayView: View {
             Text("Nudge a task's time or skip it — just for one day, without changing the recurring schedule.")
                 .font(.footnote).foregroundStyle(Color.muted)
 
-            TextField("Day (YYYY-MM-DD)", text: $day).textFieldStyle(.roundedBorder).accessibilityLabel("Day")
+            DatePicker("Day", selection: dayBinding($day, fallback: model.today), displayedComponents: .date)
+                .frame(minHeight: 44)
             AdaptiveStack {
                 Button("Yesterday") { if !model.today.isEmpty { day = shiftDate(model.today, by: -1) } }
                 Button("Today") { if !model.today.isEmpty { day = model.today } }
                 Button("Tomorrow") { if !model.today.isEmpty { day = shiftDate(model.today, by: 1) } }
             }.font(.footnote)
             Button("Show day") {
-                Task { await model.loadDaySchedule(day: day.trimmingCharacters(in: .whitespaces)) }
+                Task { await model.loadDaySchedule(day: day) }
             }
             .primaryButton().frame(maxWidth: .infinity, minHeight: 48)
             .disabled(model.busy || day.isEmpty)
 
             if let sched = model.daySchedule {
                 if sched.tasks.isEmpty && !model.busy {
-                    Text("Nothing scheduled for \(sched.day).").foregroundStyle(Color.muted)
+                    Text("Nothing scheduled for \(displayDay(sched.day)).").foregroundStyle(Color.muted)
                 }
                 ForEach(sched.tasks) { t in
                     Button { model.editOverrideStart(t) } label: {
@@ -43,10 +50,14 @@ struct AdjustDayView: View {
                             VStack(alignment: .leading) {
                                 Text(t.title).font(.headline)
                                 if t.skipped {
-                                    Text("Skipped this day").font(.footnote).foregroundStyle(Color.danger)
+                                    Text((t.subtaskCount ?? 0) > 0 ? "Skipped this day, with its \(followUpChecks(t.subtaskCount!))" : "Skipped this day")
+                                        .font(.footnote).foregroundStyle(Color.danger)
                                 } else {
-                                    Text("\(t.effectiveSlot.capitalized)\(t.effectiveTime.map { " · \($0)" } ?? "")\((t.overrideSlot != nil || t.overrideTime != nil) ? " · changed" : "")")
+                                    Text("\(t.effectiveSlot.capitalized)\(t.effectiveTime.map { " · \(displayTime($0))" } ?? "")\((t.overrideSlot != nil || t.overrideTime != nil) ? " · changed" : "")")
                                         .font(.footnote).foregroundStyle(Color.muted)
+                                    if let n = t.subtaskCount, n > 0 {
+                                        Text(followUpChecks(n)).font(.footnote).foregroundStyle(Color.muted)
+                                    }
                                 }
                             }
                             Spacer()
@@ -80,6 +91,7 @@ struct OverrideEditorView: View {
     @State private var slot: String?   // nil = use recurring default
     @State private var time = ""
     @State private var didInit = false
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private let slots = ["morning", "midday", "afternoon", "evening", "anytime"]
     private var task: DayTaskSchedule? { model.editingOverride }
@@ -87,26 +99,44 @@ struct OverrideEditorView: View {
     var body: some View {
         if let task {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Adjust for \(model.overrideDay)").font(.title2.bold()).screenHeading()
+                Text("Adjust for \(displayDay(model.overrideDay))").font(.title2.bold()).screenHeading()
                 Text("\(task.emoji) \(task.title)").font(.headline).accessibilityLabel(task.title)
-                Text("Recurring default: \(task.defaultSlot.capitalized)\(task.defaultTime.map { " · \($0)" } ?? "")")
+                Text("Recurring default: \(task.defaultSlot.capitalized)\(task.defaultTime.map { " · \(displayTime($0))" } ?? "")")
                     .font(.footnote).foregroundStyle(Color.muted)
+                    .accessibilityLabel("Recurring default: \(task.defaultSlot.capitalized)\(task.defaultTime.map { " at \(displayTime($0))" } ?? "")")
+                if let n = task.subtaskCount, n > 0 {
+                    Text("Has \(followUpChecks(n)).").font(.footnote).foregroundStyle(Color.muted)
+                }
 
                 sectionHeader("Just for this day")
-                SelectChip(label: skip ? "Skipped — won't show this day" : "Skip this day", selected: skip) { skip.toggle() }
+                // A switch with a fixed name; what it means is said separately.
+                Toggle("Skip this day", isOn: $skip).frame(minHeight: 44)
+                if skip {
+                    Text("Won't show on this day."
+                         + ((task.subtaskCount ?? 0) > 0 ? " Its \(followUpChecks(task.subtaskCount!)) \(task.subtaskCount == 1 ? "is" : "are") skipped too." : ""))
+                        .font(.footnote).foregroundStyle(Color.muted)
+                }
 
                 if !skip {
                     sectionHeader("Time slot")
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack {
-                            SelectChip(label: "Default (\(task.defaultSlot.capitalized))", selected: slot == nil) { slot = nil }
-                            ForEach(slots, id: \.self) { s in
-                                SelectChip(label: s.capitalized, selected: slot == s) { slot = s }
-                            }
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: dynamicTypeSize.isAccessibilitySize ? 220 : 110), spacing: 6)],
+                              alignment: .leading, spacing: 6) {
+                        SelectChip(label: "Default (\(task.defaultSlot.capitalized))", selected: slot == nil) { slot = nil }
+                        ForEach(slots, id: \.self) { s in
+                            SelectChip(label: s.capitalized, selected: slot == s) { slot = s }
                         }
                     }
-                    TextField("Time (HH:MM · blank = default)", text: $time)
-                        .textFieldStyle(.roundedBorder).accessibilityLabel("Time for this day, optional")
+                    .choiceGroup("Time slot")
+                    Toggle("Set a time for this day", isOn: Binding(
+                        get: { !time.isEmpty },
+                        set: { time = $0 ? (task.defaultTime ?? defaultTime(forSlot: slot ?? task.defaultSlot)) : "" }))
+                        .frame(minHeight: 44)
+                    if time.isEmpty {
+                        Text("Off: uses the recurring time.").font(.footnote).foregroundStyle(Color.muted)
+                    } else {
+                        DatePicker("Time", selection: timeBinding($time), displayedComponents: .hourAndMinute)
+                            .frame(minHeight: 44)
+                    }
                 }
 
                 Button("Save for this day") {
@@ -114,7 +144,7 @@ struct OverrideEditorView: View {
                         await model.saveOverride(
                             taskId: task.id,
                             timeSlot: skip ? "" : (slot ?? ""),
-                            timeOfDay: skip ? "" : time.trimmingCharacters(in: .whitespaces),
+                            timeOfDay: skip ? "" : time,
                             skipped: skip)
                     }
                 }

@@ -29,13 +29,15 @@
 * { box-sizing: border-box; }
 
 html, body { height: 100%; }
+/* Keep focused controls clear of the toast when the browser scrolls them into view (WCAG 2.4.11). */
+html { scroll-padding-bottom: 110px; }
 
 body {
     margin: 0;
     font-family: var(--font);
     color: var(--ink);
     background: var(--bg);
-    font-size: 18px;
+    font-size: 1.125rem; /* 18px at the default size, and follows the user's browser text size */
     line-height: 1.5;
     display: flex;
     flex-direction: column;
@@ -352,8 +354,9 @@ textarea { min-height: 90px; resize: vertical; }
 
 /* ---- Follow-up checks editor (parent task modal) ---- */
 .sub-edit-list { display: grid; gap: 8px; margin-bottom: 8px; }
-.sub-edit-row { display: flex; gap: 8px; align-items: center; }
-.sub-edit-row input { flex: 1; }
+.sub-edit-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.sub-edit-row input { flex: 1 1 12rem; min-width: 0; }
+.btn[aria-disabled="true"] { opacity: 1; color: var(--ink-soft); border-style: dashed; cursor: default; }
 
 .empty {
     text-align: center; color: var(--ink-soft);
@@ -427,10 +430,10 @@ textarea { min-height: 90px; resize: vertical; }
     border: 2px solid var(--control-border); background: #fff;
     border-radius: 10px; padding: 10px 14px; min-height: 46px;
 }
-.choice[aria-pressed="true"] { border-color: var(--brand); background: #eef3fa; font-weight: 700;
+.choice[aria-pressed="true"], .choice[aria-checked="true"] { border-color: var(--brand); background: #eef3fa; font-weight: 700;
     box-shadow: inset 0 0 0 2px var(--brand); position: relative; }
 /* A check mark on selected choices, so selection isn't shown by colour alone. */
-.choice[aria-pressed="true"]::after {
+.choice[aria-pressed="true"]::after, .choice[aria-checked="true"]::after {
     content: "✓"; position: absolute; top: -9px; right: -9px;
     width: 22px; height: 22px; border-radius: 50%;
     background: var(--brand); color: #fff; font-size: 14px; line-height: 22px; text-align: center;
@@ -446,6 +449,7 @@ textarea { min-height: 90px; resize: vertical; }
     background: var(--ink); color: #fff;
     padding: 14px 22px; border-radius: 12px;
     box-shadow: var(--shadow-lg); z-index: 90; max-width: 90vw;
+    pointer-events: none; /* never blocks a tap on what's underneath */
 }
 .toast--error { background: var(--bad); }
 .toast--success { background: var(--good-dark); }

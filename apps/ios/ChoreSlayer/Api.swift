@@ -108,13 +108,20 @@ struct BhisDay: Codable, Identifiable {
     let completed: Int
     let scheduled: Int
     let percent: Int
+    /// Tasks whose main box was checked but not every follow-up (older servers leave this out).
+    let partly: Int?
 }
 
 struct TaskFreq: Codable, Identifiable {
     var id: String { title }
     let title: String
     let type: String
+    /// Days the main box was checked.
     let count: Int
+    /// Days it was fully done, main box and every follow-up (older servers leave this out).
+    let fullCount: Int?
+    /// How many follow-up checks the task has.
+    let followUps: Int?
 }
 
 struct DatedReport: Codable, Identifiable {
@@ -152,6 +159,8 @@ struct DayTaskSchedule: Codable, Identifiable {
     let skipped: Bool
     let effectiveSlot: String
     let effectiveTime: String?
+    /// Follow-up checks under this task (older servers leave this out).
+    let subtaskCount: Int?
 }
 
 struct DaySchedule: Codable {
@@ -307,6 +316,14 @@ final class Api {
                           body: ["parentId": parentId, "title": title, "emoji": emoji])
     }
 
+    /// Moves a follow-up check one place up or down. Returns its new 1-based
+    /// position and how many follow-up checks the task has.
+    func moveSubtask(id: String, up: Bool) async throws -> (position: Int, count: Int) {
+        let r: MoveResp = try await send("move_subtask", method: "POST",
+                                         body: ["id": id, "direction": up ? "up" : "down"])
+        return (r.position, r.count)
+    }
+
     func updateSubtask(id: String, title: String) async throws {
         _ = try await raw("update_subtask", method: "POST", body: ["id": id, "title": title])
     }
@@ -412,6 +429,7 @@ private struct ChildResp: Codable { let child: Child }
 private struct ChildrenResp: Codable { let children: [Child] }
 private struct ToggleResp: Codable { let completed: Bool; let clearedFollowUps: Int? }
 private struct IdResp: Codable { let id: String? }
+private struct MoveResp: Codable { let position: Int; let count: Int }
 struct ToggleResult { let completed: Bool; let clearedFollowUps: Int }
 private struct TasksResp: Codable { let tasks: [ParentTask] }
 private struct ReportResp: Codable { let report: ReportData?; let summary: DaySummary }

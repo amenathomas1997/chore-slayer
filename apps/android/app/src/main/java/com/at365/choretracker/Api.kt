@@ -99,6 +99,11 @@ class Api(private val session: Session) {
         post("add_subtask", mapOf("parentId" to parentId, "title" to title, "emoji" to emoji))
     }
     suspend fun updateSubtask(id: String, title: String) { post("update_subtask", mapOf("id" to id, "title" to title)) }
+    /** Moves a follow-up check one place; returns (new 1-based position, number of follow-ups). */
+    suspend fun moveSubtask(id: String, up: Boolean): Pair<Int, Int> {
+        val j = post("move_subtask", mapOf("id" to id, "direction" to if (up) "up" else "down"))
+        return j.optInt("position") to j.optInt("count")
+    }
 
     // Parent — reports
     suspend fun getReport(childId: String, day: String? = null): ReportBundle {

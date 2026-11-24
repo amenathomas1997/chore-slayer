@@ -130,7 +130,7 @@
             el('div', { class: 'field' }, [el('label', { for: 'fam-search', text: 'Search by name or code' }), search]),
             el('button', { class: 'btn btn--ghost', type: 'button', onclick: () => showFamilies() }, 'Refresh'),
         ]));
-        view.appendChild(el('p', { id: 'fam-count', class: 'muted' }));
+        view.appendChild(el('p', { id: 'fam-count', class: 'muted', role: 'status' }));
         view.appendChild(el('div', { id: 'fam-table' }));
         renderTable();
         const target = focusId && document.getElementById(focusId);
@@ -181,13 +181,21 @@
                 .map((h) => el('th', { scope: 'col' }, h)))),
             el('tbody', {}, rows),
         ]));
+        // On narrow screens the CSS turns rows into cards (display:block), which makes
+        // some browsers drop table semantics; state the roles explicitly.
+        const t = box.querySelector('.admin-table');
+        t.setAttribute('role', 'table');
+        t.querySelectorAll('thead, tbody').forEach((g) => g.setAttribute('role', 'rowgroup'));
+        t.querySelectorAll('tr').forEach((r) => r.setAttribute('role', 'row'));
+        t.querySelectorAll('th').forEach((c) => c.setAttribute('role', 'columnheader'));
+        t.querySelectorAll('td').forEach((c) => c.setAttribute('role', 'cell'));
     }
 
     // ------------------------------------------------------------ dialogs
     // A native modal <dialog>: traps focus, closes on Escape, and returns focus.
     function dialog(title, fields, submitText, danger, onSubmit, opener) {
         const d = el('dialog', { class: 'admin-dialog', 'aria-labelledby': 'dlg-h' });
-        const err = el('p', { class: 'field-err', role: 'alert' });
+        const err = el('p', { class: 'field-err', role: 'alert', id: 'dlg-err' });
         const form = el('form', { method: 'dialog', novalidate: true }, [
             el('h2', { id: 'dlg-h', class: 'panel-title', text: title }),
             ...fields,
@@ -200,6 +208,8 @@
         form.addEventListener('submit', async (ev) => {
             ev.preventDefault();
             err.textContent = '';
+            const firstInput = form.querySelector('input, select, textarea');
+            if (firstInput) firstInput.removeAttribute('aria-invalid');
             try {
                 const msg = await onSubmit();
                 d.close();
@@ -207,6 +217,12 @@
                 showFamilies(opener && opener.id);
             } catch (e2) {
                 err.textContent = e2.message;
+                // Tie the error to the field so it is read with it, and go back there.
+                if (firstInput) {
+                    firstInput.setAttribute('aria-invalid', 'true');
+                    firstInput.setAttribute('aria-describedby', ((firstInput.getAttribute('aria-describedby') || '') + ' dlg-err').trim());
+                    firstInput.focus();
+                }
             }
         });
         d.appendChild(form);

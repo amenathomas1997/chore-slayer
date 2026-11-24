@@ -115,8 +115,13 @@ data class BhisStats(
     val totalCompletions: Int, val daysWithActivity: Int, val activeTaskCount: Int,
     val avgCompletionPct: Int, val avgBehaviorRating: Double?, val moodCounts: Map<String, Int>,
 )
-data class BhisDay(val day: String, val completed: Int, val scheduled: Int, val percent: Int)
-data class TaskFreq(val title: String, val type: String, val count: Int)
+/** [partly]: tasks whose main box was checked that day but whose follow-ups weren't all done. */
+data class BhisDay(val day: String, val completed: Int, val scheduled: Int, val percent: Int, val partly: Int = 0)
+/**
+ * [count]: days the main box was checked. [fullCount]: days it was fully done (main box and every
+ * follow-up); null on older servers. [followUps]: how many follow-up checks the task has.
+ */
+data class TaskFreq(val title: String, val type: String, val count: Int, val fullCount: Int? = null, val followUps: Int = 0)
 data class DatedReport(
     val day: String, val mood: String?, val behaviorRating: Int?, val highlights: String?,
     val challenges: String?, val notes: String?, val goals: String?,
@@ -140,8 +145,8 @@ data class BhisReport(
                     s.optInt("avgCompletionPct"),
                     if (s.isNull("avgBehaviorRating")) null else s.optDouble("avgBehaviorRating"),
                     moodMap),
-                j.optJSONArray("daily").list { BhisDay(it.optString("day"), it.optInt("completed"), it.optInt("scheduled"), it.optInt("percent")) },
-                j.optJSONArray("taskFreq").list { TaskFreq(it.optString("title"), it.optString("type"), it.optInt("count")) },
+                j.optJSONArray("daily").list { BhisDay(it.optString("day"), it.optInt("completed"), it.optInt("scheduled"), it.optInt("percent"), it.optInt("partly")) },
+                j.optJSONArray("taskFreq").list { TaskFreq(it.optString("title"), it.optString("type"), it.optInt("count"), it.int("fullCount"), it.optInt("followUps")) },
                 j.optJSONArray("reports").list {
                     DatedReport(it.optString("day"), it.str("mood"), it.int("behaviorRating"), it.str("highlights"),
                         it.str("challenges"), it.str("notes"), it.str("goals"))
@@ -154,12 +159,14 @@ data class DayTaskSchedule(
     val id: String, val title: String, val type: String, val emoji: String,
     val defaultSlot: String, val defaultTime: String?, val overrideSlot: String?, val overrideTime: String?,
     val skipped: Boolean, val effectiveSlot: String, val effectiveTime: String?,
+    /** How many follow-up checks the task has (they are skipped with it). */
+    val subtaskCount: Int = 0,
 ) {
     companion object {
         fun from(j: JSONObject) = DayTaskSchedule(
             j.getString("id"), j.optString("title"), j.optString("type"), j.optString("emoji"),
             j.str("defaultSlot") ?: "anytime", j.str("defaultTime"), j.str("overrideSlot"), j.str("overrideTime"),
-            j.optBoolean("skipped"), j.str("effectiveSlot") ?: "anytime", j.str("effectiveTime"))
+            j.optBoolean("skipped"), j.str("effectiveSlot") ?: "anytime", j.str("effectiveTime"), j.optInt("subtaskCount"))
     }
 }
 

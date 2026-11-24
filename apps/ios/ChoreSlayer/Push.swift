@@ -24,6 +24,16 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         completionHandler([.banner, .list, .sound])
     }
+
+    /// A notification was tapped. Kid reminders carry `type: "reminder"` and the kid's id.
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        let info = response.notification.request.content.userInfo
+        if info["type"] as? String == "reminder", let childId = info["childId"] as? String, !childId.isEmpty {
+            Task { @MainActor in Push.shared.onReminderTap?(childId) }
+        }
+        completionHandler()
+    }
 }
 
 /// Push permission and the APNs token for this device. What the device should
@@ -37,6 +47,8 @@ final class Push {
 
     /// Called with (newToken, oldToken) whenever iOS hands out a different token.
     var onTokenChange: ((String, String?) -> Void)?
+    /// Called with the kid's id when a kid reminder notification is tapped.
+    var onReminderTap: ((String) -> Void)?
 
     var token: String? {
         get { UserDefaults.standard.string(forKey: "push_token") }
@@ -163,8 +175,13 @@ struct NotificationsView: View {
                 .screenHeading()
             Text("Get alerts on this device:")
             VStack(alignment: .leading, spacing: 6) {
-                Text("• when a kid finishes everything on their list for the day")
-                Text("• once in the evening if chores are still left to do")
+                ForEach(["when a kid finishes everything on their list for the day",
+                         "once in the evening if chores are still left to do"], id: \.self) { line in
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text("•").accessibilityHidden(true)
+                        Text(line)
+                    }
+                }
             }
             Toggle("Send me parent alerts", isOn: $parentAlerts)
                 .font(.headline)

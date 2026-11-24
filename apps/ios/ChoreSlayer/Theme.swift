@@ -115,3 +115,138 @@ private struct ScreenHeading: ViewModifier {
 extension View {
     func screenHeading() -> some View { modifier(ScreenHeading()) }
 }
+
+// MARK: - Spoken text
+
+/// Text with decorative emoji, arrows, bullets and separators removed, for
+/// VoiceOver labels ("🎉 See my day" → "See my day", "a · b" → "a, b").
+func plainSpoken(_ s: String) -> String {
+    var out = s.replacingOccurrences(of: " · ", with: ", ")
+        .replacingOccurrences(of: " → ", with: " to ")
+    out = String(out.filter { c in
+        if "←→↳•·★☆".contains(c) { return false }
+        return !c.unicodeScalars.contains { $0.properties.isEmojiPresentation || $0.value == 0xFE0F }
+    })
+    return out.split(separator: " ", omittingEmptySubsequences: true).joined(separator: " ")
+        .trimmingCharacters(in: .whitespaces)
+}
+
+// MARK: - Dates and times
+
+/// The server's "yyyy-MM-dd" days, read as local midnight (for DatePicker and display).
+private let ymdFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.calendar = Calendar(identifier: .gregorian)
+    f.locale = Locale(identifier: "en_US_POSIX")
+    f.dateFormat = "yyyy-MM-dd"
+    return f
+}()
+private let hmFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.calendar = Calendar(identifier: .gregorian)
+    f.locale = Locale(identifier: "en_US_POSIX")
+    f.dateFormat = "HH:mm"
+    return f
+}()
+
+func dateFromYMD(_ s: String) -> Date? { ymdFormatter.date(from: s) }
+func ymdString(_ d: Date) -> String { ymdFormatter.string(from: d) }
+
+/// "Tuesday, November 24" instead of "2026-11-24", on screen and for VoiceOver.
+func displayDay(_ ymd: String) -> String {
+    guard let d = dateFromYMD(ymd) else { return ymd }
+    return d.formatted(.dateTime.weekday(.wide).month(.wide).day())
+}
+
+/// "7:30 AM" (or the 24-hour form, by the device's setting) instead of "07:30".
+func displayTime(_ hm: String) -> String {
+    guard let d = hmFormatter.date(from: String(hm.prefix(5))) else { return hm }
+    return d.formatted(date: .omitted, time: .shortened)
+}
+
+/// A DatePicker binding over a "yyyy-MM-dd" string.
+func dayBinding(_ s: Binding<String>, fallback: String) -> Binding<Date> {
+    Binding(
+        get: { dateFromYMD(s.wrappedValue) ?? dateFromYMD(fallback) ?? Date() },
+        set: { s.wrappedValue = ymdString($0) })
+}
+
+/// A DatePicker binding over an "HH:MM" string.
+func timeBinding(_ s: Binding<String>) -> Binding<Date> {
+    Binding(
+        get: { hmFormatter.date(from: String(s.wrappedValue.prefix(5))) ?? hmFormatter.date(from: "08:00")! },
+        set: { s.wrappedValue = hmFormatter.string(from: $0) })
+}
+
+/// A suggested time when "Set a specific time" is first turned on.
+func defaultTime(forSlot slot: String) -> String {
+    switch slot {
+    case "morning": return "07:30"
+    case "midday": return "12:00"
+    case "afternoon": return "15:30"
+    case "evening": return "18:30"
+    default: return "08:00"
+    }
+}
+
+// MARK: - Form fields
+
+/// A visible label above a field (not only a placeholder). The label is hidden
+/// from VoiceOver because the field itself carries the same name.
+struct LabeledField<Content: View>: View {
+    let title: String
+    var hint: String? = nil
+    /// Shown under the field, next to the control that caused it.
+    var error: String? = nil
+    @ViewBuilder let content: () -> Content
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.subheadline.weight(.semibold)).accessibilityHidden(true)
+            content()
+            if let hint {
+                Text(hint).font(.footnote).foregroundStyle(Color.muted).accessibilityHidden(true)
+            }
+            if let error {
+                Text("Error: \(error)").font(.footnote.weight(.semibold)).foregroundStyle(Color.danger)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// A text field with a visible label above it.
+struct LabeledTextField: View {
+    let title: String
+    @Binding var text: String
+    var hint: String? = nil
+    var error: String? = nil
+    var axis: Axis = .horizontal
+    var body: some View {
+        LabeledField(title: title, hint: hint, error: error) {
+            TextField(title, text: $text, prompt: Text(""), axis: axis)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel(title)
+                .accessibilityHint(hint ?? "")
+        }
+    }
+}
+
+// MARK: - Choice groups
+
+extension View {
+    /// A named group of single- or multi-choice chips ("Time of day").
+    func choiceGroup(_ name: String) -> some View {
+        accessibilityElement(children: .contain).accessibilityLabel(name)
+    }
+}
+
+/// Adds the iOS 17 toggle trait where available.
+struct ToggleTrait: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 17, *) {
+            content.accessibilityAddTraits(.isToggle)
+        } else {
+            content
+        }
+    }
+}

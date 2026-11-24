@@ -143,6 +143,8 @@ checked on that day.
 ### Daily check-offs (the kid action)
 | Action | Method | Auth | Params / Body | Returns |
 |---|---|---|---|---|
+| `reorder_subtasks` | POST | 👪 | `{ parentId, ids: [...] }` | `{ ok }`. Sets the order of a task's follow-up checks. |
+| `move_subtask` | POST | 👪 | `{ id, direction: "up"\|"down" }` | `{ ok, position, count }`. Moves a follow-up check one place; renumbers its siblings. |
 | `toggle_completion` | POST | 🧒 | `{ childId, taskId, day? }` | `{ ok, completed, day, clearedFollowUps? }`. Unchecking a main task also clears that day's follow-up checks (`clearedFollowUps` = how many). Checking a follow-up whose main task isn't checked returns 409 `parent_not_done`. |
 
 Toggles the check for `day` (default today). Works for both main tasks and

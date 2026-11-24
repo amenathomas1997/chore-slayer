@@ -6,11 +6,12 @@ import UIKit
 struct ConnectDeviceView: View {
     @ObservedObject var model: AppModel
     enum Mode: String, CaseIterable, Identifiable {
-        case create = "✨ Create a family"
-        case connect = "🔗 Connect this device"
+        case create = "Create a family"
+        case connect = "Connect this device"
         var id: String { rawValue }
     }
     @State private var mode: Mode = .create
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -19,11 +20,21 @@ struct ConnectDeviceView: View {
                 .screenHeading()
             Text("Set up your family to get started.")
                 .foregroundStyle(Color.muted)
-            Picker("Set up", selection: $mode) {
-                ForEach(Mode.allCases) { Text($0.rawValue).tag($0) }
+            if dynamicTypeSize.isAccessibilitySize {
+                // Segments can't wrap, so large text gets stacked choices instead.
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Mode.allCases) { m in
+                        SelectChip(label: m.rawValue, selected: mode == m) { mode = m }
+                    }
+                }
+                .choiceGroup("Set up")
+            } else {
+                Picker("Set up", selection: $mode) {
+                    ForEach(Mode.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityLabel("Set up")
             }
-            .pickerStyle(.segmented)
-            .accessibilityLabel("Create a family, or connect this device")
 
             switch mode {
             case .create: CreateFamilyForm(model: model)
@@ -39,7 +50,8 @@ private struct CreateFamilyForm: View {
     @State private var name = ""
     @State private var pin = ""
     @State private var pin2 = ""
-    @State private var problem: String?
+    @State private var pinProblem: String?
+    @State private var matchProblem: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -48,26 +60,22 @@ private struct CreateFamilyForm: View {
                 .accessibilityAddTraits(.isHeader)
             Text("Choose a parent PIN (4–8 digits). You’ll get a Family Code to add more devices, sign in on the web, or recover.")
                 .font(.footnote).foregroundStyle(Color.muted)
-            TextField("Family name (optional)", text: $name)
-                .textFieldStyle(.roundedBorder)
-                .textContentType(.familyName)
-            PinField(title: "Parent PIN", pin: $pin, isNew: true)
-            PinField(title: "Confirm PIN", pin: $pin2, isNew: true)
-            if let problem {
-                Text(problem).foregroundStyle(Color.errorInk).font(.footnote)
+            LabeledField(title: "Family name (optional)") {
+                TextField("Family name, optional", text: $name, prompt: Text(""))
+                    .textFieldStyle(.roundedBorder)
+                    .textContentType(.familyName)
             }
+            PinField(title: "Parent PIN", pin: $pin, isNew: true, hint: "4 to 8 digits", error: pinProblem)
+            PinField(title: "Confirm PIN", pin: $pin2, isNew: true, error: matchProblem)
             Button("Create family") {
-                guard pin.count >= 4 else { problem = "PIN must be 4 to 8 digits."; return }
-                guard pin == pin2 else { problem = "The two PINs do not match."; return }
-                problem = nil
+                pinProblem = nil; matchProblem = nil
+                guard pin.count >= 4 else { pinProblem = "PIN must be 4 to 8 digits."; Announcer.say("Error: PIN must be 4 to 8 digits."); return }
+                guard pin == pin2 else { matchProblem = "The two PINs do not match."; Announcer.say("Error: The two PINs do not match."); return }
                 Task { await model.createFamily(name: name.trimmingCharacters(in: .whitespaces), pin: pin) }
             }
             .primaryButton()
             .frame(maxWidth: .infinity, minHeight: 48)
             .disabled(model.busy)
-        }
-        .onChange(of: problem) { msg in
-            if let msg { UIAccessibility.post(notification: .announcement, argument: msg) }
         }
     }
 }
@@ -84,10 +92,12 @@ private struct ConnectFamilyForm: View {
                 .accessibilityAddTraits(.isHeader)
             Text("Enter your Family Code and parent PIN to link this device to an existing family.")
                 .font(.footnote).foregroundStyle(Color.muted)
-            TextField("Family code", text: $code)
-                .textFieldStyle(.roundedBorder)
-                .textInputAutocapitalization(.characters)
-                .autocorrectionDisabled()
+            LabeledField(title: "Family code") {
+                TextField("Family code", text: $code, prompt: Text(""))
+                    .textFieldStyle(.roundedBorder)
+                    .textInputAutocapitalization(.characters)
+                    .autocorrectionDisabled()
+            }
             PinField(title: "Parent PIN", pin: $pin, isNew: false)
             Button("Connect") {
                 Task { await model.connectDevice(code: code.trimmingCharacters(in: .whitespaces), pin: pin) }
@@ -104,17 +114,23 @@ struct PinField: View {
     let title: String
     @Binding var pin: String
     let isNew: Bool
+    var hint: String? = nil
+    /// Shown under the field when this PIN is the problem.
+    var error: String? = nil
     var body: some View {
-        SecureField(title, text: $pin)
-            .textFieldStyle(.roundedBorder)
-            .keyboardType(.numberPad)
-            .textContentType(isNew ? .newPassword : .password)
-            .onChange(of: pin) { newValue in
-                let digits = newValue.filter(\.isNumber)
-                if digits != newValue || digits.count > 8 {
-                    pin = String(digits.prefix(8))
+        LabeledField(title: title, hint: hint, error: error) {
+            SecureField(title, text: $pin, prompt: Text(""))
+                .textFieldStyle(.roundedBorder)
+                .keyboardType(.numberPad)
+                .textContentType(isNew ? .newPassword : .password)
+                .accessibilityHint(hint ?? "")
+                .onChange(of: pin) { newValue in
+                    let digits = newValue.filter(\.isNumber)
+                    if digits != newValue || digits.count > 8 {
+                        pin = String(digits.prefix(8))
+                    }
                 }
-            }
+        }
     }
 }
 
@@ -159,7 +175,8 @@ struct ChangePinView: View {
     @State private var current = ""
     @State private var new1 = ""
     @State private var new2 = ""
-    @State private var problem: String?
+    @State private var pinProblem: String?
+    @State private var matchProblem: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -167,23 +184,17 @@ struct ChangePinView: View {
                 .font(.title2.bold())
                 .screenHeading()
             PinField(title: "Current PIN", pin: $current, isNew: false)
-            PinField(title: "New PIN", pin: $new1, isNew: true)
-            PinField(title: "Confirm new PIN", pin: $new2, isNew: true)
-            if let problem {
-                Text(problem).foregroundStyle(Color.errorInk).font(.footnote)
-            }
+            PinField(title: "New PIN", pin: $new1, isNew: true, hint: "4 to 8 digits", error: pinProblem)
+            PinField(title: "Confirm new PIN", pin: $new2, isNew: true, error: matchProblem)
             Button("Change PIN") {
-                guard new1.count >= 4 else { problem = "New PIN must be 4–8 digits."; return }
-                guard new1 == new2 else { problem = "The two new PINs do not match."; return }
-                problem = nil
+                pinProblem = nil; matchProblem = nil
+                guard new1.count >= 4 else { pinProblem = "New PIN must be 4 to 8 digits."; Announcer.say("Error: New PIN must be 4 to 8 digits."); return }
+                guard new1 == new2 else { matchProblem = "The two new PINs do not match."; Announcer.say("Error: The two new PINs do not match."); return }
                 Task { await model.changePin(current: current, new: new1) }
             }
             .primaryButton()
             .frame(maxWidth: .infinity, minHeight: 48)
             .disabled(model.busy || current.count < 4)
-        }
-        .onChange(of: problem) { msg in
-            if let msg { UIAccessibility.post(notification: .announcement, argument: msg) }
         }
     }
 }
@@ -228,7 +239,7 @@ struct KidSummaryView: View {
                 Text("\(child.firstName)'s Day")
                     .font(.title2.bold())
                     .screenHeading()
-                Text(board.day).font(.footnote).foregroundStyle(Color.muted)
+                Text(displayDay(board.day)).font(.footnote).foregroundStyle(Color.muted)
 
                 ZStack {
                     Circle().stroke(Color(.systemGray5), lineWidth: 13)
@@ -242,6 +253,7 @@ struct KidSummaryView: View {
                 .accessibilityLabel("\(pct) percent of steps done")
 
                 Text(Self.cheer(pct)).font(.headline).multilineTextAlignment(.center)
+                    .accessibilityLabel(plainSpoken(Self.cheer(pct)))
                 Text(String(repeating: "★", count: stars) + String(repeating: "☆", count: 5 - stars))
                     .font(.title2).foregroundStyle(.orange)
                     .accessibilityLabel("\(stars) out of 5 stars")
@@ -290,7 +302,9 @@ struct KidSummaryView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                Button("← Back to my chores") { model.back() }
+                Button { model.back() } label: {
+                    Label("Back to my chores", systemImage: "chevron.backward")
+                }
                     .accessibilityLabel("Back to my chores")
                     .buttonStyle(.bordered)
                     .frame(maxWidth: .infinity, minHeight: 48)
@@ -311,9 +325,11 @@ struct KidSummaryView: View {
     }
 }
 
-private struct StatTile: View {
+struct StatTile: View {
     let value: String
     let label: String
+    /// What VoiceOver reads instead of "value, label", e.g. "67 percent of all checks done".
+    var spoken: String? = nil
     var body: some View {
         VStack(spacing: 2) {
             Text(value).font(.title2.bold())
@@ -322,6 +338,7 @@ private struct StatTile: View {
         .frame(maxWidth: .infinity, minHeight: 64)
         .background(Color(.secondarySystemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 12))
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(spoken ?? "\(value.replacingOccurrences(of: "/", with: " of ")) \(label)")
     }
 }

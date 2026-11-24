@@ -19,10 +19,19 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     val session = Session(app)
     private val api = Api(session)
 
-    var screen by mutableStateOf(Screen.Connecting); private set
+    private var currentScreen by mutableStateOf(Screen.Connecting)
+    /** Changing screen drops the old screen's field error and unsaved-changes flag. */
+    var screen: Screen
+        get() = currentScreen
+        private set(v) { if (v != currentScreen) { fieldError = null; unsavedChanges = false }; currentScreen = v }
     var busy by mutableStateOf(false); private set
     var error by mutableStateOf<String?>(null)
     var notice by mutableStateOf<String?>(null)
+    /** A server error that belongs to one field (wrong PIN, name not found): shown under that field, which gets focus. */
+    var fieldError by mutableStateOf<FieldError?>(null)
+    private var fieldErrorSeq = 0
+    /** Set by the editors (task, child, daily report) while they hold unsaved changes, so Back can ask first. */
+    var unsavedChanges by mutableStateOf(false)
 
     var family by mutableStateOf(session.family); private set
     var statusInfo by mutableStateOf<StatusInfo?>(null); private set
@@ -59,6 +68,8 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     /** Unsaved daily-report text, kept in memory so the idle lock doesn't lose it. */
     var reportDraft: ReportDraft? = null
+    /** Unsaved task-editor fields, kept in memory so the idle lock doesn't lose them. */
+    var taskDraft: TaskDraft? = null
 
     private var lastParentActivity = System.currentTimeMillis()
     val parentIdleLimitMs = 10 * 60 * 1000L
@@ -73,13 +84,21 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     private fun launch(block: suspend () -> Unit) = viewModelScope.launch { block() }
 
-    /** Run an API action with the busy flag and error handling. */
-    private suspend fun act(block: suspend () -> Unit) {
+    /**
+     * Run an API action with the busy flag and error handling. [fieldFor] maps an error that
+     * belongs to one field (e.g. bad_pin) to that field's key; other errors go to the status area.
+     */
+    private suspend fun act(fieldFor: (ApiError) -> String? = { null }, block: suspend () -> Unit) {
         if (isParent) markParentActivity()
-        busy = true; error = null; notice = null
-        try { block() } catch (e: ApiError) { error = e.message } catch (e: Exception) { error = e.message ?: "Something went wrong." }
+        busy = true; error = null; notice = null; fieldError = null
+        try { block() } catch (e: ApiError) {
+            val f = fieldFor(e)
+            if (f != null) fieldError = FieldError(f, e.message, ++fieldErrorSeq) else error = e.message
+        } catch (e: Exception) { error = e.message ?: "Something went wrong." }
         busy = false
     }
+
+    private val pinField: (ApiError) -> String? = { if (it.code == "bad_pin") "pin" else null }
 
     // ---- connect / role ----
 
@@ -92,7 +111,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun connectDevice(code: String, pin: String) = launch {
-        act {
+        act(pinField) {
             val (token, fam) = api.parentLogin(pin, familyCode = code)
             session.family = fam; family = fam; session.token = token
             isParent = true; markParentActivity()
@@ -145,7 +164,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     fun kidLogin(first: String, last: String) = launch {
         val fam = family ?: run { screen = Screen.ConnectDevice; return@launch }
         if (session.token != null) endParentSession()
-        act {
+        act({ if (it.code == "not_found") "kidName" else null }) {
             val c = api.childLogin(first, last, fam.id)
             child = c; kidStatus = ""; board = api.daySummary(c.id); screen = Screen.KidBoard
         }
@@ -209,7 +228,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     fun parentLogin(pin: String) = launch {
         val fam = family ?: run { screen = Screen.ConnectDevice; return@launch }
-        act {
+        act(pinField) {
             val (token, f) = api.parentLogin(pin, familyId = fam.id)
             session.token = token; session.family = f; family = f
             isParent = true; markParentActivity()
@@ -221,13 +240,15 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     fun openNotifications() { error = null; notice = null; refreshPushAllowed(); screen = Screen.Notifications }
 
     fun changePin(current: String, new: String) = launch {
-        act { api.changePin(current, new); notice = "PIN changed."; screen = Screen.ParentHome }
+        act({ if (it.code == "bad_pin" && it.status == 403) "currentPin" else null }) {
+            api.changePin(current, new); notice = "PIN changed."; screen = Screen.ParentHome
+        }
     }
 
     fun openDeleteFamily() { error = null; notice = null; screen = Screen.DeleteFamily }
 
     fun deleteFamily(pin: String) = launch {
-        act {
+        act(pinField) {
             api.deleteFamily(pin)
             forgetFamily()
             notice = "Your family and all its data were deleted."
@@ -250,12 +271,12 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         endParentSession(keepDrafts = true)
         screen = Screen.KidLogin
         notice = "The parent area locked after 10 minutes without use. Enter the PIN to go back in." +
-            if (reportDraft != null) " Your unsaved report notes are kept." else ""
+            if (reportDraft != null || taskDraft != null) " Your unsaved changes are kept." else ""
     }
 
     private fun endParentSession(keepDrafts: Boolean = false) {
         idleWarning = false
-        if (!keepDrafts) reportDraft = null
+        if (!keepDrafts) { reportDraft = null; taskDraft = null }
         if (session.token != null) launch { api.parentLogout() }
         session.token = null
         isParent = false
@@ -308,8 +329,23 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         act { parentTasks = api.parentTasks(c.id); screen = Screen.Tasks }
     }
 
-    fun addTaskStart() { error = null; editingTask = null; screen = Screen.TaskEditor }
-    fun editTaskStart(t: ParentTask) { error = null; editingTask = t; screen = Screen.TaskEditor }
+    fun addTaskStart() { error = null; editingTask = null; screen = Screen.TaskEditor; draftKeptNotice("new") }
+    fun editTaskStart(t: ParentTask) { error = null; editingTask = t; screen = Screen.TaskEditor; draftKeptNotice(t.id) }
+
+    private fun draftKeptNotice(taskKey: String) {
+        if (taskDraft?.let { it.childId == managedChild?.id && it.taskKey == taskKey } == true) notice = "Your unsaved changes were kept."
+    }
+
+    /** "Discard" on the Discard changes? question: forget the drafts and go back. */
+    fun discardAndGoBack() {
+        when (screen) {
+            Screen.TaskEditor -> taskDraft = null
+            Screen.DailyReport -> reportDraft = null
+            else -> {}
+        }
+        unsavedChanges = false
+        back()
+    }
 
     /**
      * Existing task: saves pending follow-up renames ([renames] = subId to new title) and the main
@@ -324,11 +360,14 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             if (existing != null) {
                 renames.forEach { (id, t) -> if (t.isNotBlank()) api.updateSubtask(id, t) }
                 api.updateTask(existing.id, title, type, emoji, daysOfWeek, timeSlot, timeOfDay)
-                parentTasks = api.parentTasks(c.id); editingTask = null; screen = Screen.Tasks
+                val list = api.parentTasks(c.id)
+                // No suspension from here on, so the editor can't write the draft back in between.
+                taskDraft = null; parentTasks = list; editingTask = null; screen = Screen.Tasks
                 notice = "$title saved."
             } else {
                 val id = api.addTask(c.id, title, type, emoji, daysOfWeek, timeSlot, timeOfDay)
                 parentTasks = api.parentTasks(c.id)
+                taskDraft = null
                 val added = parentTasks.firstOrNull { it.id == id }
                     ?: parentTasks.lastOrNull { it.title == title }
                 if (added != null) {
@@ -347,7 +386,8 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     fun deleteTask(t: ParentTask) = launch {
         val c = managedChild ?: return@launch
         act {
-            api.removeTask(t.id); parentTasks = api.parentTasks(c.id); editingTask = null; screen = Screen.Tasks
+            api.removeTask(t.id); taskDraft = null
+            parentTasks = api.parentTasks(c.id); editingTask = null; screen = Screen.Tasks
             notice = "${t.title} deleted."
         }
     }
@@ -396,6 +436,21 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         onResult(ok)
     }
 
+    /** Move a follow-up check one place up or down. [onResult] gets true once it moved. */
+    fun moveSubtask(subId: String, up: Boolean, onResult: (Boolean) -> Unit = {}) = launch {
+        val c = managedChild ?: return@launch
+        val keep = editingTask?.id
+        var ok = false
+        act {
+            val (pos, count) = api.moveSubtask(subId, up)
+            ok = true
+            parentTasks = api.parentTasks(c.id)
+            editingTask = parentTasks.firstOrNull { it.id == keep } ?: editingTask
+            notice = "Moved to position $pos of $count."
+        }
+        onResult(ok)
+    }
+
     // ---- parent: reports ----
 
     fun openReport() = launch {
@@ -425,7 +480,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         act {
             val r = api.bhis(c.id, from, to)
             bhisReport = r
-            notice = "BHIS report ready for ${r.from} to ${r.to}."
+            notice = "BHIS report ready for ${prettyDate(r.from)} to ${prettyDate(r.to)}."
         }
     }
 
@@ -450,18 +505,33 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         val c = managedChild ?: return@launch
         val day = overrideDay
         val title = editingOverride?.title ?: "Task"
+        val dayName = prettyDate(day)
         act {
             api.setOverride(taskId, day, timeSlot, timeOfDay, skipped)
             daySchedule = api.daySchedule(c.id, day); editingOverride = null; screen = Screen.AdjustDay
             notice = when {
-                reset -> "$title is back to its usual schedule for $day."
-                skipped -> "$title is skipped on $day. Its follow-up checks are skipped too."
-                else -> "$title changed for $day."
+                reset -> "$title is back to its usual schedule for $dayName."
+                skipped -> "$title is skipped on $dayName." +
+                    if ((editingOverride?.subtaskCount ?: 0) > 0) " Its follow-up checks are skipped too." else ""
+                else -> "$title changed for $dayName."
             }
         }
     }
 
     fun clearOverride(taskId: String) = saveOverride(taskId, "", "", false, reset = true)
+
+    /**
+     * A kid reminder was tapped: if that kid is signed in on this device (and no parent is working
+     * here), show their board, freshly loaded. Otherwise the app just stays where it was.
+     */
+    fun openFromNotification(childId: String?) {
+        val c = child ?: return
+        if (childId.isNullOrEmpty() || c.id != childId || isParent) return
+        launch {
+            runCatching { board = api.daySummary(c.id) }
+            screen = Screen.KidBoard
+        }
+    }
 
     // ---- push notifications ----
 
@@ -538,3 +608,12 @@ data class ReportDraft(
     val childId: String, val day: String, val mood: String, val rating: Int?,
     val highlights: String, val challenges: String, val notes: String, val goals: String,
 )
+
+/** Unsaved task-editor fields. [taskKey] is the task id, or "new". */
+data class TaskDraft(
+    val childId: String, val taskKey: String, val title: String, val type: String, val emoji: String,
+    val mask: String, val slot: String, val time: String, val newSub: String, val subEdits: Map<String, String>,
+)
+
+/** [seq] changes on every new error, so the same message twice still moves focus again. */
+data class FieldError(val field: String, val message: String, val seq: Int)

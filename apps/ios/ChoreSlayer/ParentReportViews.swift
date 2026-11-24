@@ -17,8 +17,20 @@ func shiftDate(_ ymd: String, by days: Int) -> String {
 
 // MARK: - Daily report
 
+/// "Main box checked, 1 of 2 follow-ups done" and the like.
+func followUpStatus(_ t: DayTask) -> String {
+    let n = t.subtasks.count
+    let done = t.subtasks.filter(\.done).count
+    if n == 0 { return t.done ? "Done" : "Not done" }
+    if t.complete { return "Done, all \(n) follow-up\(n == 1 ? "" : "s") done" }
+    if t.done { return "\(done) of \(n) follow-up\(n == 1 ? "" : "s") done" }
+    return "Not done, \(n) follow-up check\(n == 1 ? "" : "s")"
+}
+
 struct DailyReportView: View {
     @ObservedObject var model: AppModel
+    /// Shown under "Save report" when saving failed.
+    @State private var saveError: String?
 
     private var bundle: ReportBundle? { model.reportBundle }
 
@@ -27,35 +39,52 @@ struct DailyReportView: View {
             let c = bundle.summary.counts
             VStack(alignment: .leading, spacing: 12) {
                 Text("Daily report").font(.title2.bold()).screenHeading()
-                Text(bundle.day).font(.subheadline).foregroundStyle(Color.muted)
+                Text(displayDay(bundle.day)).font(.subheadline).foregroundStyle(Color.muted)
 
-                Text("Today: \(countsLine(c))")
-                    .font(.headline)
-                    .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(.secondarySystemBackground)).clipShape(RoundedRectangle(cornerRadius: 12))
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel("Today: \(countsSpoken(c))")
+                AdaptiveStack(spacing: 10) {
+                    StatTile(value: "\(c.done) of \(c.total)", label: "Tasks fully done",
+                             spoken: "\(c.done) of \(c.total) tasks fully done")
+                    StatTile(value: "\(c.percent)%", label: "Of all checks done",
+                             spoken: "\(c.percent) percent of all checks done")
+                }
+
+                if !bundle.summary.tasks.isEmpty {
+                    sectionHeader("Tasks")
+                    ForEach(bundle.summary.tasks) { t in
+                        reportTaskRow(t)
+                    }
+                }
 
                 // Fields live in AppModel.reportDraft so the idle lock doesn't lose them.
-                TextField("Mood", text: $model.reportDraft.mood).textFieldStyle(.roundedBorder).accessibilityLabel("Mood")
+                LabeledTextField(title: "Mood", text: $model.reportDraft.mood)
 
-                sectionHeader("Behavior (1–5)")
+                sectionHeader("Behavior rating (1 to 5)")
                 HStack {
                     ForEach(1...5, id: \.self) { n in
-                        SelectChip(label: "\(n)", selected: model.reportDraft.rating == n, a11yLabel: "Rating \(n) of 5") {
+                        SelectChip(label: "\(n)", selected: model.reportDraft.rating == n, a11yLabel: "\(n) of 5") {
                             model.reportDraft.rating = (model.reportDraft.rating == n) ? nil : n
                             model.markParentActivity()
                         }
                     }
                 }
+                .choiceGroup("Behavior rating")
 
-                TextField("Highlights", text: $model.reportDraft.highlights, axis: .vertical).textFieldStyle(.roundedBorder).accessibilityLabel("Highlights")
-                TextField("Challenges", text: $model.reportDraft.challenges, axis: .vertical).textFieldStyle(.roundedBorder).accessibilityLabel("Challenges")
-                TextField("Notes", text: $model.reportDraft.notes, axis: .vertical).textFieldStyle(.roundedBorder).accessibilityLabel("Notes")
-                TextField("Goals", text: $model.reportDraft.goals, axis: .vertical).textFieldStyle(.roundedBorder).accessibilityLabel("Goals")
+                LabeledTextField(title: "Highlights", text: $model.reportDraft.highlights, axis: .vertical)
+                LabeledTextField(title: "Challenges", text: $model.reportDraft.challenges, axis: .vertical)
+                LabeledTextField(title: "Notes", text: $model.reportDraft.notes, axis: .vertical)
+                LabeledTextField(title: "Goals", text: $model.reportDraft.goals, axis: .vertical)
 
-                Button("Save report") { Task { await model.saveReport() } }
-                    .primaryButton().frame(maxWidth: .infinity, minHeight: 48).disabled(model.busy)
+                Button("Save report") {
+                    Task {
+                        let ok = await model.saveReport()
+                        saveError = ok ? nil : (model.error ?? "The report wasn't saved.")
+                    }
+                }
+                .primaryButton().frame(maxWidth: .infinity, minHeight: 48).disabled(model.busy)
+                if let saveError {
+                    Text("Error: \(saveError) Your text is still here; try saving again.")
+                        .font(.footnote.weight(.semibold)).foregroundStyle(Color.danger)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .onChange(of: model.reportDraft) { _ in model.markParentActivity() }
@@ -63,9 +92,52 @@ struct DailyReportView: View {
             Text("Loading…")
         }
     }
+
+    /// One task and, nested under it, its follow-up checks (like "See my day").
+    @ViewBuilder private func reportTaskRow(_ t: DayTask) -> some View {
+        let status = followUpStatus(t)
+        HStack(alignment: .top) {
+            Image(systemName: t.complete ? "checkmark.square.fill" : (t.done ? "minus.square.fill" : "square"))
+                .accessibilityHidden(true)
+            Text(t.title)
+            Spacer()
+            Text(status).font(.footnote.weight(.semibold)).foregroundStyle(Color.muted)
+                .multilineTextAlignment(.trailing)
+        }
+        .font(.subheadline)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(t.title): \(status)")
+        ForEach(Array(t.subtasks.enumerated()), id: \.element.id) { i, s in
+            HStack {
+                Image(systemName: s.done ? "checkmark.square.fill" : "square").accessibilityHidden(true)
+                Text(s.title)
+                Spacer()
+                Text(s.done ? "Done" : "Not yet").font(.footnote).foregroundStyle(Color.muted)
+            }
+            .font(.subheadline)
+            .padding(.leading, 28)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Follow-up \(i + 1) of \(t.subtasks.count) for \(t.title): \(s.title), \(s.done ? "done" : "not yet")")
+        }
+    }
 }
 
 // MARK: - BHIS report
+
+/// "Wipe table, chore: main box checked 5 times, fully done 3 times, 2 follow-up checks"
+func taskFreqSpoken(_ t: TaskFreq) -> String {
+    func times(_ n: Int) -> String { n == 1 ? "1 time" : "\(n) times" }
+    let typ = t.type == "activity" ? "activity" : "chore"
+    let subs = t.followUps ?? 0
+    guard subs > 0 else { return "\(t.title), \(typ): done \(times(t.count))" }
+    let full = t.fullCount.map { ", fully done \(times($0))" } ?? ""
+    return "\(t.title), \(typ): main box checked \(times(t.count))\(full), \(subs) follow-up check\(subs == 1 ? "" : "s")"
+}
+
+func bhisDaySpoken(_ d: BhisDay) -> String {
+    let partly = (d.partly ?? 0) > 0 ? ", \(d.partly!) partly" : ""
+    return "\(displayDay(d.day)): \(d.completed) of \(d.scheduled) done\(partly), \(d.percent) percent"
+}
 
 struct BhisView: View {
     @ObservedObject var model: AppModel
@@ -80,16 +152,16 @@ struct BhisView: View {
                 Text("for \(c.firstName) \(c.lastName)").font(.subheadline).foregroundStyle(Color.muted)
             }
 
-            AdaptiveStack {
-                TextField("From (YYYY-MM-DD)", text: $from).textFieldStyle(.roundedBorder).accessibilityLabel("From date")
-                TextField("To", text: $to).textFieldStyle(.roundedBorder).accessibilityLabel("To date")
-            }
+            DatePicker("From", selection: dayBinding($from, fallback: model.today), displayedComponents: .date)
+                .frame(minHeight: 44)
+            DatePicker("To", selection: dayBinding($to, fallback: model.today), displayedComponents: .date)
+                .frame(minHeight: 44)
             AdaptiveStack {
                 Button("Last 7 days") { if !model.today.isEmpty { from = shiftDate(model.today, by: -6); to = model.today } }
                 Button("Last 30 days") { if !model.today.isEmpty { from = shiftDate(model.today, by: -29); to = model.today } }
             }.font(.footnote)
             Button("Generate") {
-                Task { await model.generateBhis(from: from.trimmingCharacters(in: .whitespaces), to: to.trimmingCharacters(in: .whitespaces)) }
+                Task { await model.generateBhis(from: from, to: to) }
             }
             .primaryButton().frame(maxWidth: .infinity, minHeight: 48)
             .disabled(model.busy || from.isEmpty || to.isEmpty)
@@ -106,23 +178,39 @@ struct BhisView: View {
                 if !r.daily.isEmpty {
                     sectionHeader("Daily")
                     ForEach(r.daily) { d in
-                        HStack {
-                            Text(d.day); Spacer(); Text("\(d.completed)/\(d.scheduled) · \(d.percent)%")
+                        AdaptiveStack(spacing: 4) {
+                            Text(displayDay(d.day))
+                            if !dynamicLarge { Spacer() }
+                            Text("\(d.completed)/\(d.scheduled) · \(d.percent)%"
+                                 + ((d.partly ?? 0) > 0 ? " · \(d.partly!) partly" : ""))
                         }
                         .font(.subheadline)
                         .accessibilityElement(children: .ignore)
-                        .accessibilityLabel("\(d.day): \(d.completed) of \(d.scheduled) done, \(d.percent) percent")
+                        .accessibilityLabel(bhisDaySpoken(d))
                     }
                 }
                 if !r.taskFreq.isEmpty {
                     sectionHeader("How often each task was done")
+                    if r.taskFreq.contains(where: { ($0.followUps ?? 0) > 0 }) {
+                        Text("For tasks with follow-up checks: \"main box\" counts days the task itself was checked, \"fully done\" counts days every follow-up was done too.")
+                            .font(.footnote).foregroundStyle(Color.muted)
+                    }
                     ForEach(r.taskFreq) { t in
-                        HStack {
-                            Text("\(t.type == "activity" ? "⭐" : "✅") \(t.title)"); Spacer(); Text("×\(t.count)")
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(t.title).fontWeight(.semibold)
+                            if (t.followUps ?? 0) > 0 {
+                                Text("Main box ×\(t.count)"
+                                     + (t.fullCount.map { " · Fully done ×\($0)" } ?? "")
+                                     + " · \(t.followUps!) follow-up check\(t.followUps == 1 ? "" : "s")")
+                                    .foregroundStyle(Color.muted)
+                            } else {
+                                Text("Done ×\(t.count)").foregroundStyle(Color.muted)
+                            }
                         }
                         .font(.subheadline)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .accessibilityElement(children: .ignore)
-                        .accessibilityLabel("\(t.title), done \(t.count) time\(t.count == 1 ? "" : "s")")
+                        .accessibilityLabel(taskFreqSpoken(t))
                     }
                 }
                 if !r.reports.isEmpty {
@@ -141,34 +229,46 @@ struct BhisView: View {
         }
     }
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    private var dynamicLarge: Bool { dynamicTypeSize.isAccessibilitySize }
+
     @ViewBuilder private func statsCard(_ r: BhisReport) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("\(r.range.from) → \(r.range.to) · \(r.range.days) days").font(.headline)
+            Text("\(displayDay(r.range.from)) to \(displayDay(r.range.to)), \(r.range.days) days").font(.headline)
             statLine("Tasks completed", "\(r.stats.totalCompletions)")
             statLine("Days with activity", "\(r.stats.daysWithActivity) of \(r.range.days)")
             statLine("Active tasks", "\(r.stats.activeTaskCount)")
             statLine("Avg completion", "\(r.stats.avgCompletionPct)%")
-            statLine("Avg behavior", r.stats.avgBehaviorRating.map { "\($0) / 5" } ?? "—")
+            statLine("Avg behavior", r.stats.avgBehaviorRating.map { "\($0) / 5" } ?? "—",
+                     spoken: r.stats.avgBehaviorRating.map { "\($0) out of 5" } ?? "none")
             if !r.stats.moodCounts.isEmpty {
-                statLine("Moods", r.stats.moodCounts.map { "\($0.key)×\($0.value)" }.joined(separator: "  "))
+                statLine("Moods", r.stats.moodCounts.map { "\($0.key)×\($0.value)" }.joined(separator: "  "),
+                         spoken: r.stats.moodCounts.map { "\($0.key) \($0.value)" }.joined(separator: ", "))
             }
         }
         .padding(12).frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(.secondarySystemBackground)).clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    @ViewBuilder private func statLine(_ label: String, _ value: String) -> some View {
-        HStack { Text(label).foregroundStyle(Color.muted); Spacer(); Text(value).fontWeight(.semibold) }
-            .font(.subheadline)
-            .accessibilityElement(children: .combine)
+    @ViewBuilder private func statLine(_ label: String, _ value: String, spoken: String? = nil) -> some View {
+        AdaptiveStack(spacing: 2) {
+            Text(label).foregroundStyle(Color.muted)
+            if !dynamicLarge { Spacer() }
+            Text(value).fontWeight(.semibold)
+        }
+        .font(.subheadline)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(label): \(spoken ?? value)")
     }
 
     @ViewBuilder private func noteCard(_ rep: DatedReport) -> some View {
+        let hasMood = rep.mood?.isEmpty == false
         VStack(alignment: .leading, spacing: 2) {
-            Text(rep.day).fontWeight(.semibold)
-            if (rep.mood?.isEmpty == false) || rep.behaviorRating != nil {
-                Text("Mood: \(rep.mood?.isEmpty == false ? rep.mood! : "—") · Behavior: \(rep.behaviorRating.map(String.init) ?? "—")")
+            Text(displayDay(rep.day)).fontWeight(.semibold)
+            if hasMood || rep.behaviorRating != nil {
+                Text("Mood: \(hasMood ? rep.mood! : "—") · Behavior: \(rep.behaviorRating.map(String.init) ?? "—")")
                     .font(.footnote).foregroundStyle(Color.muted)
+                    .accessibilityLabel("Mood: \(hasMood ? rep.mood! : "none"), behavior: \(rep.behaviorRating.map { "\($0) of 5" } ?? "none")")
             }
             noteLine("Highlights", rep.highlights)
             noteLine("Challenges", rep.challenges)
@@ -199,10 +299,19 @@ func bhisShareText(_ r: BhisReport) -> String {
         s += "Moods: " + r.stats.moodCounts.map { "\($0.key) ×\($0.value)" }.joined(separator: ", ") + "\n"
     }
     s += "\nDaily:\n"
-    for d in r.daily { s += "  \(d.day): \(d.completed)/\(d.scheduled) (\(d.percent)%)\n" }
+    for d in r.daily {
+        let partly = (d.partly ?? 0) > 0 ? ", \(d.partly!) partly" : ""
+        s += "  \(d.day): \(d.completed)/\(d.scheduled) (\(d.percent)%)\(partly)\n"
+    }
     if !r.taskFreq.isEmpty {
         s += "\nTask frequency:\n"
-        for t in r.taskFreq { s += "  \(t.title) ×\(t.count)\n" }
+        for t in r.taskFreq {
+            if let subs = t.followUps, subs > 0 {
+                s += "  \(t.title): main box ×\(t.count)\(t.fullCount.map { ", fully done ×\($0)" } ?? "") (\(subs) follow-up check\(subs == 1 ? "" : "s"))\n"
+            } else {
+                s += "  \(t.title) ×\(t.count)\n"
+            }
+        }
     }
     if !r.reports.isEmpty {
         s += "\nDaily notes:\n"

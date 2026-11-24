@@ -500,6 +500,59 @@ switch ($action) {
         json_out(['ok' => true, 'id' => $id]);
         break;
 
+    case 'reorder_subtasks': // set the full order of a task's follow-up checks: {parentId, ids:[...]}
+        need_post($method);
+        $familyId = require_parent();
+        $f = require_fields(['parentId']);
+        assert_task_in_family($f['parentId'], $familyId);
+        $want = body()['ids'] ?? null;
+        if (!is_array($want)) {
+            json_out(['error' => 'bad_ids', 'message' => 'ids must be a list.'], 422);
+        }
+        $sib = db()->prepare('SELECT id FROM tasks WHERE parent_id = ? AND active = 1 ORDER BY sort_order, title');
+        $sib->execute([$f['parentId']]);
+        $have = $sib->fetchAll(PDO::FETCH_COLUMN);
+        // Listed ids first, in the given order; anything not listed keeps its place after them.
+        $order = array_values(array_intersect($want, $have));
+        foreach ($have as $id) {
+            if (!in_array($id, $order, true)) {
+                $order[] = $id;
+            }
+        }
+        $up = db()->prepare('UPDATE tasks SET sort_order = ? WHERE id = ?');
+        foreach ($order as $n => $id) {
+            $up->execute([$n + 1, $id]);
+        }
+        json_out(['ok' => true]);
+        break;
+
+    case 'move_subtask': // reorder a follow-up check: {id, direction: "up"|"down"}
+        need_post($method);
+        $familyId = require_parent();
+        $f = require_fields(['id', 'direction']);
+        assert_task_in_family($f['id'], $familyId);
+        $cur = db()->prepare('SELECT id, parent_id FROM tasks WHERE id = ? AND parent_id IS NOT NULL AND active = 1');
+        $cur->execute([$f['id']]);
+        $row = $cur->fetch(PDO::FETCH_ASSOC);
+        if (!$row) {
+            json_out(['error' => 'bad_task', 'message' => 'Follow-up check not found.'], 404);
+        }
+        $sib = db()->prepare('SELECT id FROM tasks WHERE parent_id = ? AND active = 1 ORDER BY sort_order, title');
+        $sib->execute([$row['parent_id']]);
+        $ids = $sib->fetchAll(PDO::FETCH_COLUMN);
+        $i = array_search($f['id'], $ids, true);
+        $j = $f['direction'] === 'up' ? $i - 1 : $i + 1;
+        if ($i !== false && $j >= 0 && $j < count($ids)) {
+            [$ids[$i], $ids[$j]] = [$ids[$j], $ids[$i]];
+        }
+        // Renumber 1..n so the order is unambiguous from here on.
+        $up = db()->prepare('UPDATE tasks SET sort_order = ? WHERE id = ?');
+        foreach ($ids as $n => $id) {
+            $up->execute([$n + 1, $id]);
+        }
+        json_out(['ok' => true, 'position' => array_search($f['id'], $ids, true) + 1, 'count' => count($ids)]);
+        break;
+
     case 'update_subtask':
         need_post($method);
         $familyId = require_parent();
@@ -981,7 +1034,7 @@ function bhis_report(string $childId, string $from, string $to): array
 
     // Completion frequency per task (which tasks done most/least).
     $tf = db()->prepare(
-        'SELECT t.title, t.type, COUNT(c.id) n
+        'SELECT t.id, t.title, t.type, COUNT(c.id) n
          FROM tasks t LEFT JOIN completions c
            ON c.task_id = t.id AND c.day BETWEEN ? AND ?
          WHERE t.child_id = ? AND t.parent_id IS NULL
@@ -989,8 +1042,19 @@ function bhis_report(string $childId, string $from, string $to): array
          ORDER BY n DESC, t.title'
     );
     $tf->execute([$from, $to, $childId]);
-    $taskFreq = array_map(function ($r) {
-        return ['title' => $r['title'], 'type' => $r['type'], 'count' => (int) $r['n']];
+    // count = days the main box was checked; fullCount = days it was fully done
+    // (main box and every follow-up); followUps = how many follow-up checks it has.
+    $taskFreq = array_map(function ($r) use ($mainDone, $subDone, $subCount) {
+        $full = 0;
+        foreach ($mainDone as $d => $mains) {
+            if (isset($mains[$r['id']]) && ($subDone[$d][$r['id']] ?? 0) >= ($subCount[$r['id']] ?? 0)) {
+                $full++;
+            }
+        }
+        return [
+            'title' => $r['title'], 'type' => $r['type'], 'count' => (int) $r['n'],
+            'fullCount' => $full, 'followUps' => $subCount[$r['id']] ?? 0,
+        ];
     }, $tf->fetchAll());
 
     // Reports in range.
@@ -1018,7 +1082,11 @@ function bhis_report(string $childId, string $from, string $to): array
             $percentSum += $pct;
             $percentDays++;
         }
-        $dailyRows[] = ['day' => $d, 'completed' => $n, 'scheduled' => $scheduled, 'percent' => $pct];
+        $dailyRows[] = [
+            'day' => $d, 'completed' => $n, 'scheduled' => $scheduled, 'percent' => $pct,
+            // Main box checked but follow-ups not all done.
+            'partly' => max(0, ($startedByDay[$d] ?? 0) - $n),
+        ];
     }
 
     // Mood + behavior aggregates from reports.

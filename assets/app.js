@@ -28,6 +28,10 @@
         return node;
     }
     const $ = (sel) => document.querySelector(sel);
+    // Visible text with a decorative emoji that screen readers and voice control skip.
+    const ico = (emoji, text, after) => after
+        ? [text + ' ', el('span', { 'aria-hidden': 'true', text: emoji })]
+        : [el('span', { 'aria-hidden': 'true', text: emoji + ' ' }), text];
 
     // -------------------------------------------------- API wrapper
     const TOKEN_KEY = 'chore_parent_token';
@@ -283,6 +287,7 @@
         let dirty = false;
         dialog.addEventListener('input', () => { dirty = true; });
         dialog.addEventListener('change', () => { dirty = true; });
+        dialog.addEventListener('click', (e) => { if (e.target.closest && e.target.closest('.choice, .sub-edit-row button')) dirty = true; });
         const backdrop = el('div', {
             class: 'modal-backdrop',
             onclick: (e) => { if (e.target === backdrop && !dirty) closeModal(); }
@@ -291,8 +296,15 @@
             'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])');
         // On the document, so Escape and the Tab trap keep working even if the
         // focused element is removed from the dialog.
+        let escArmed = false;
         const onKey = (e) => {
-            if (e.key === 'Escape') { e.preventDefault(); closeModal(); return; }
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                // With unsaved changes, the first Escape only warns; a second one discards.
+                if (dirty && !escArmed) { escArmed = true; toast('You have unsaved changes. Press Escape again to discard them.', 'error'); return; }
+                closeModal(); return;
+            }
+            escArmed = false;
             if (e.key !== 'Tab') return;
             const f = focusables();
             if (!f.length) return;
@@ -350,7 +362,7 @@
             box.appendChild(el('button', {
                 class: 'header-btn', onclick: () => parentLogout('kid'),
                 'aria-label': 'Kid sign-in: sign the parent out and let a kid sign in'
-            }, '🧒 Kid sign-in'));
+            }, ico('🧒', 'Kid sign-in')));
             box.appendChild(el('button', {
                 class: 'header-btn', onclick: () => showFamilyCode(state.family ? state.family.code : '', false)
             }, 'Family code'));
@@ -456,15 +468,15 @@
         wrap.appendChild(el('p', { class: 'panel-sub', text: 'Family: ' + (state.family.name || state.family.code) }));
         const tabs = el('div', { class: 'tabs', role: 'group', 'aria-label': 'Who are you?' });
         const kidTab = el('button', {
-            class: 'tab', type: 'button', id: 'tab-kid', 'aria-label': "I'm a Kid",
+            class: 'tab', type: 'button', id: 'tab-kid',
             'aria-current': state.loginTab === 'kid' ? 'true' : 'false',
             onclick: () => { state.loginTab = 'kid'; switchPanel(); }
-        }, "🧒 I'm a Kid");
+        }, ico('🧒', "I'm a Kid"));
         const parentTab = el('button', {
-            class: 'tab', type: 'button', id: 'tab-parent', 'aria-label': 'Parent / Admin',
+            class: 'tab', type: 'button', id: 'tab-parent',
             'aria-current': state.loginTab === 'parent' ? 'true' : 'false',
             onclick: () => { state.loginTab = 'parent'; switchPanel(); }
-        }, '👪 Parent / Admin');
+        }, ico('👪', 'Parent / Admin'));
         tabs.appendChild(kidTab);
         tabs.appendChild(parentTab);
 
@@ -492,15 +504,15 @@
         const onConnect = state.loginTab === 'connect';
         const tabs = el('div', { class: 'tabs', role: 'group', 'aria-label': 'Get started' });
         tabs.appendChild(el('button', {
-            class: 'tab', type: 'button', id: 'tab-create', 'aria-label': 'Create a family',
+            class: 'tab', type: 'button', id: 'tab-create',
             'aria-current': onConnect ? 'false' : 'true',
             onclick: () => { state.loginTab = 'create'; switchPanel(); }
-        }, '✨ Create a family'));
+        }, ico('✨', 'Create a family')));
         tabs.appendChild(el('button', {
-            class: 'tab', type: 'button', id: 'tab-connect', 'aria-label': 'Connect this device',
+            class: 'tab', type: 'button', id: 'tab-connect',
             'aria-current': onConnect ? 'true' : 'false',
             onclick: () => { state.loginTab = 'connect'; switchPanel(); }
-        }, '🔗 Connect this device'));
+        }, ico('🔗', 'Connect this device')));
         const grid = el('div', { class: 'login-grid' });
         grid.appendChild(onConnect ? connectDeviceCard() : createFamilyCard());
         wrap.appendChild(tabs);
@@ -596,7 +608,7 @@
             el('p', { class: 'panel-sub', text: 'Type your name the way a parent set it up.' }),
             el('div', { class: 'field' }, [el('label', { for: 'k-first', text: 'First name' }), first]),
             el('div', { class: 'field' }, [el('label', { for: 'k-last', text: 'Last name' }), last]),
-            el('button', { class: 'btn btn--lg btn--block', type: 'submit' }, "Let’s go! 🚀")
+            el('button', { class: 'btn btn--lg btn--block', type: 'submit' }, ico('🚀', 'Let’s go!', true))
         ]);
     }
 
@@ -942,7 +954,7 @@
         wrap.appendChild(el('div', { class: 'modal__actions no-print', style: 'margin-top:22px' }, [
             el('button', { class: 'btn btn--ghost', onclick: () => { state._focusSel = '[data-fkey="see-my-day"]'; go('kid'); } },
                 [el('span', { 'aria-hidden': 'true', text: '← ' }), 'Back to my chores']),
-            el('button', { class: 'btn', onclick: () => window.print() }, '🖨️ Print my day')
+            el('button', { class: 'btn', onclick: () => window.print() }, ico('🖨️', 'Print my day'))
         ]));
         return wrap;
     }
@@ -1000,10 +1012,10 @@
         ];
         defs.forEach(([key, label, alabel]) => {
             tabs.appendChild(el('button', {
-                class: 'tab', type: 'button', id: 'ptab-' + key, 'aria-label': alabel,
+                class: 'tab', type: 'button', id: 'ptab-' + key,
                 'aria-current': state.parentTab === key ? 'true' : 'false',
                 onclick: () => { state.parentTab = key; switchPanel(); }
-            }, label));
+            }, ico(label.split(' ')[0], alabel)));
         });
         wrap.appendChild(tabs);
 
@@ -1067,6 +1079,39 @@
         return card;
     }
 
+    // A single-choice group (icon, colour): role=radiogroup with one Tab stop and
+    // arrow keys to move and choose, like native radio buttons.
+    function radioGroup(labelledBy, items, selected, onPick) {
+        const row = el('div', { class: 'choice-row', role: 'radiogroup', 'aria-labelledby': labelledBy });
+        const btns = items.map(it => el('button', {
+            type: 'button', role: 'radio', class: 'choice' + (it.swatch ? ' choice--swatch' : ''),
+            'aria-label': it.label, title: it.label,
+            style: it.swatch ? 'background:' + it.swatch + ';width:46px' : null,
+            text: it.text || null
+        }));
+        const pick = (i, focus) => {
+            btns.forEach((b, j) => { b.setAttribute('aria-checked', j === i ? 'true' : 'false'); b.tabIndex = j === i ? 0 : -1; });
+            if (focus) btns[i].focus();
+            onPick(items[i].value);
+            // Counts as an edit (e.g. so Escape asks before discarding it).
+            row.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+        btns.forEach((b, i) => {
+            b.addEventListener('click', () => pick(i, false));
+            b.addEventListener('keydown', (e) => {
+                const k = e.key; let n = null;
+                if (k === 'ArrowRight' || k === 'ArrowDown') n = (i + 1) % btns.length;
+                else if (k === 'ArrowLeft' || k === 'ArrowUp') n = (i - 1 + btns.length) % btns.length;
+                else if (k === 'Home') n = 0; else if (k === 'End') n = btns.length - 1;
+                if (n !== null) { e.preventDefault(); pick(n, true); }
+            });
+            row.appendChild(b);
+        });
+        const start = Math.max(0, items.findIndex(it => it.value === selected));
+        btns.forEach((b, j) => { b.setAttribute('aria-checked', j === start ? 'true' : 'false'); b.tabIndex = j === start ? 0 : -1; });
+        return row;
+    }
+
     function openChildForm(child) {
         const isEdit = !!child;
         const f = 'cf' + (++formSeq);
@@ -1075,31 +1120,10 @@
         let chosenEmoji = child ? child.emoji : '🙂';
         let chosenColor = child ? child.color : COLORS[0];
 
-        const emojiRow = el('div', { class: 'choice-row', role: 'group', 'aria-labelledby': f + '-icon-lbl' });
-        EMOJIS.forEach((e, i) => {
-            const b = el('button', { type: 'button', class: 'choice', 'aria-pressed': e === chosenEmoji ? 'true' : 'false',
-                'aria-label': EMOJI_NAMES[i], title: EMOJI_NAMES[i], text: e });
-            b.addEventListener('click', () => {
-                chosenEmoji = e;
-                emojiRow.querySelectorAll('.choice').forEach(x => x.setAttribute('aria-pressed', 'false'));
-                b.setAttribute('aria-pressed', 'true');
-            });
-            emojiRow.appendChild(b);
-        });
-        const colorRow = el('div', { class: 'choice-row', role: 'group', 'aria-labelledby': f + '-color-lbl' });
-        COLORS.forEach((col, i) => {
-            const b = el('button', {
-                type: 'button', class: 'choice choice--swatch', 'aria-pressed': col === chosenColor ? 'true' : 'false',
-                'aria-label': COLOR_NAMES[i], title: COLOR_NAMES[i],
-                style: 'background:' + col + ';width:46px'
-            });
-            b.addEventListener('click', () => {
-                chosenColor = col;
-                colorRow.querySelectorAll('.choice').forEach(x => x.setAttribute('aria-pressed', 'false'));
-                b.setAttribute('aria-pressed', 'true');
-            });
-            colorRow.appendChild(b);
-        });
+        const emojiRow = radioGroup(f + '-icon-lbl', EMOJIS.map((e, i) => ({ value: e, label: EMOJI_NAMES[i], text: e })),
+            chosenEmoji, (v) => { chosenEmoji = v; });
+        const colorRow = radioGroup(f + '-color-lbl', COLORS.map((col, i) => ({ value: col, label: COLOR_NAMES[i], swatch: col })),
+            chosenColor, (v) => { chosenColor = v; });
 
         const content = el('div', {}, [
             el('div', { class: 'row' }, [
@@ -1276,12 +1300,34 @@
         const liveRows = () => subRows.filter(r => !r.removed);
         // Number every row ("Follow-up check 2") so each field and button has its own name.
         function renumber() {
-            liveRows().forEach((r, i) => {
+            const rows = liveRows();
+            rows.forEach((r, i) => {
                 const n = i + 1;
+                const t = r.input.value.trim();
                 r.label.textContent = 'Follow-up check ' + n;
-                r.removeBtn.setAttribute('aria-label', 'Remove follow-up check ' + n + (r.input.value.trim() ? ': ' + r.input.value.trim() : ''));
+                r.removeBtn.setAttribute('aria-label', 'Remove follow-up check ' + n + (t ? ': ' + t : ''));
+                r.upBtn.setAttribute('aria-label', 'Move follow-up check ' + n + ' up' + (t ? ': ' + t : ''));
+                r.downBtn.setAttribute('aria-label', 'Move follow-up check ' + n + ' down' + (t ? ': ' + t : ''));
+                // aria-disabled (not disabled) so a focused button at the end isn't dropped.
+                r.upBtn.setAttribute('aria-disabled', i === 0 ? 'true' : 'false');
+                r.downBtn.setAttribute('aria-disabled', i === rows.length - 1 ? 'true' : 'false');
             });
         }
+        function moveRow(rec, delta) {
+            const rows = liveRows(); const i = rows.indexOf(rec); const j = i + delta;
+            if (j < 0 || j >= rows.length) return;
+            const other = rows[j];
+            // Swap in the data, then in the DOM.
+            const a = subRows.indexOf(rec), b = subRows.indexOf(other);
+            subRows[a] = other; subRows[b] = rec;
+            if (delta < 0) subList.insertBefore(rec.rowEl, other.rowEl);
+            else subList.insertBefore(other.rowEl, rec.rowEl);
+            orderChanged = true;
+            renumber();
+            (delta < 0 ? rec.upBtn : rec.downBtn).focus();
+            announce('Moved to position ' + (j + 1) + ' of ' + rows.length + '.');
+        }
+        let orderChanged = false;
         function addSubRow(existing, focusIt) {
             const rid = f + '-sub-' + (subRows.length + 1);
             const input = el('input', { type: 'text', id: rid, value: existing ? existing.title : '', placeholder: 'e.g. Did you wipe the chairs?' });
@@ -1297,8 +1343,13 @@
                 announce('Follow-up check removed' + (gone ? ': ' + gone : '') + '. It will be deleted when you save.');
             } }, [el('span', { 'aria-hidden': 'true', text: '✕' }), el('span', { class: 'sr-only', text: 'Remove' })]);
             rec.removeBtn = removeBtn;
-            input.addEventListener('change', renumber);
-            const rowEl = el('div', { class: 'sub-edit-row' }, [label, input, removeBtn]);
+            rec.upBtn = el('button', { type: 'button', class: 'btn btn--small btn--ghost', onclick: () => { if (rec.upBtn.getAttribute('aria-disabled') !== 'true') moveRow(rec, -1); } },
+                [el('span', { 'aria-hidden': 'true', text: '↑' }), el('span', { class: 'sr-only', text: 'Move up' })]);
+            rec.downBtn = el('button', { type: 'button', class: 'btn btn--small btn--ghost', onclick: () => { if (rec.downBtn.getAttribute('aria-disabled') !== 'true') moveRow(rec, 1); } },
+                [el('span', { 'aria-hidden': 'true', text: '↓' }), el('span', { class: 'sr-only', text: 'Move down' })]);
+            input.addEventListener('input', renumber);
+            const rowEl = el('div', { class: 'sub-edit-row' }, [label, input, rec.upBtn, rec.downBtn, removeBtn]);
+            rec.rowEl = rowEl;
             subRows.push(rec);
             subList.appendChild(rowEl);
             renumber();
@@ -1317,7 +1368,7 @@
             el('div', { class: 'field' }, [el('span', { class: 'label', id: f + '-days-lbl', text: 'Repeats on' }), dayRow, dayErr, presets]),
             el('fieldset', { class: 'field fieldset', 'aria-describedby': helpId }, [
                 el('legend', { text: 'Follow-up checks (optional)' }),
-                el('p', { class: 'help', id: helpId, text: 'These appear after the kid checks the main task, in this order. For example, for “Wipe table”: “Did you wipe it twice?”, “Did you wipe the chairs?”. They are saved when you press ' + (isEdit ? 'Save' : 'Add') + '.' }),
+                el('p', { class: 'help', id: helpId, text: 'These appear after the kid checks the main task, in this order; use the arrow buttons to change it. For example, for “Wipe table”: “Did you wipe it twice?”, “Did you wipe the chairs?”. They are saved when you press ' + (isEdit ? 'Save' : 'Add') + '.' }),
                 subList,
                 addBtn
             ])
@@ -1360,7 +1411,13 @@
                     } else {
                         const res = await api('add_subtask', { method: 'POST', body: { parentId: mainId, title: st } });
                         r.id = res && res.id ? res.id : 'saved'; r.orig = st;
+                        if (subRows.some(o => o !== r && o.id && !o.removed)) orderChanged = true;
                     }
+                }
+                if (orderChanged) {
+                    const ids = liveRows().filter(r => r.id && r.id !== 'saved' && r.input.value.trim()).map(r => r.id);
+                    await api('reorder_subtasks', { method: 'POST', body: { parentId: mainId, ids: ids } });
+                    orderChanged = false;
                 }
                 const n = liveRows().filter(r => r.input.value.trim()).length;
                 toast('“' + t + '” saved' + (n ? ' with ' + n + ' follow-up check' + (n > 1 ? 's' : '') : '') + '.', 'success');
@@ -1408,6 +1465,32 @@
             stat(sum.counts.chores.done + '/' + sum.counts.chores.total, 'Chores'),
             stat(sum.counts.activities.done + '/' + sum.counts.activities.total, 'Activities'),
         ]));
+
+        // What the child checked off that day, with follow-up checks under each task.
+        if (sum.tasks && sum.tasks.length) {
+            card.appendChild(el('h3', { class: 'label', text: 'Checked off this day' }));
+            const ul = el('ul', { class: 'summary-list summary-list--compact' });
+            sum.tasks.forEach(t => {
+                const subs = t.subtasks || [];
+                const complete = (t.complete !== undefined) ? t.complete : taskComplete(t);
+                const status = complete ? 'Done'
+                    : t.done ? stepsDoneCount(t) + ' of ' + subs.length + ' follow-ups done' : 'Not done';
+                const li = el('li', { class: 'summary-item ' + (complete ? 'done' : t.done ? 'partial' : 'todo') }, [
+                    el('span', { class: 'grow', text: t.title }),
+                    el('span', { class: 'badge' }, [el('span', { class: 'sr-only', text: ': ' }), status])
+                ]);
+                if (subs.length) {
+                    const sl = el('ul', { class: 'summary-sublist', 'aria-label': 'Follow-up checks for ' + t.title });
+                    subs.forEach(st => sl.appendChild(el('li', { class: 'summary-subitem ' + (st.done ? 'done' : 'todo') }, [
+                        el('span', { class: 'grow', text: st.title }),
+                        el('span', { class: 'badge' }, [el('span', { class: 'sr-only', text: ': ' }), st.done ? 'Done' : 'Not done'])
+                    ])));
+                    li.appendChild(sl);
+                }
+                ul.appendChild(li);
+            });
+            card.appendChild(ul);
+        }
 
         // Per-day schedule (adjust a single day's time/slot or skip a task)
         card.appendChild(await scheduleEditor(childId, day));
@@ -1617,7 +1700,7 @@
         sheet.appendChild(el('div', { class: 'stat-grid' }, [
             stat(rep.stats.avgCompletionPct + '%', 'Avg. completion'),
             stat(rep.stats.daysWithActivity, 'Active days'),
-            stat(rep.stats.totalCompletions, 'Tasks completed'),
+            stat(rep.stats.totalCompletions, 'Tasks fully done'),
             stat(rep.stats.avgBehaviorRating === null ? '—' : rep.stats.avgBehaviorRating, 'Avg. behavior (1–5)'),
         ]));
 
@@ -1637,7 +1720,8 @@
         const tbl = el('table');
         tbl.appendChild(el('caption', { class: 'sr-only', text: 'Daily completion' }));
         tbl.appendChild(el('thead', {}, [el('tr', {}, [
-            el('th', { scope: 'col', text: 'Date' }), el('th', { scope: 'col', text: 'Done / scheduled' }),
+            el('th', { scope: 'col', text: 'Date' }), el('th', { scope: 'col', text: 'Fully done / scheduled' }),
+            el('th', { scope: 'col', text: 'Partly done' }),
             el('th', { scope: 'col', text: 'Completion' }), el('td', { 'aria-hidden': 'true' })
         ])]));
         rep.daily.forEach(d => {
@@ -1645,6 +1729,7 @@
             tbl.appendChild(el('tr', {}, [
                 el('td', { text: fmtDateShort(d.day) }),
                 el('td', { text: d.completed + sched }),
+                el('td', { text: String(d.partly || 0) }),
                 el('td', { text: d.percent + '%' }),
                 el('td', { 'aria-hidden': 'true' }, [el('span', { class: 'bar-mini', style: 'width:' + Math.max(2, d.percent) + 'px' })])
             ]));
@@ -1656,12 +1741,16 @@
             sheet.appendChild(el('h3', { text: 'How often each task was checked off' }));
             const t2 = el('table');
             t2.appendChild(el('caption', { class: 'sr-only', text: 'How often each task was checked off' }));
-            t2.appendChild(el('thead', {}, [el('tr', {}, [el('th', { scope: 'col', text: 'Task' }), el('th', { scope: 'col', text: 'Type' }), el('th', { scope: 'col', text: 'Times main box checked' })])]));
+            t2.appendChild(el('thead', {}, [el('tr', {}, [
+                el('th', { scope: 'col', text: 'Task' }), el('th', { scope: 'col', text: 'Type' }),
+                el('th', { scope: 'col', text: 'Main box checked' }), el('th', { scope: 'col', text: 'Fully done' })])]));
             rep.taskFreq.forEach(t => {
+                const fu = t.followUps || 0;
                 t2.appendChild(el('tr', {}, [
-                    el('td', { text: t.title }),
+                    el('td', { text: t.title + (fu ? ' (' + fu + ' follow-up check' + (fu > 1 ? 's' : '') + ')' : '') }),
                     el('td', { text: t.type === 'activity' ? 'Activity' : 'Chore' }),
-                    el('td', { text: String(t.count) })
+                    el('td', { text: String(t.count) }),
+                    el('td', { text: String(t.fullCount !== undefined ? t.fullCount : t.count) })
                 ]));
             });
             sheet.appendChild(t2);
@@ -1687,9 +1776,9 @@
 
         // Export actions
         const actions = el('div', { class: 'modal__actions no-print', style: 'margin-top:20px' }, [
-            el('button', { class: 'btn btn--ghost', onclick: () => copyBhisText(rep) }, '📋 Copy as text'),
-            el('button', { class: 'btn btn--ghost', onclick: () => downloadBhisCsv(rep) }, '⬇️ Download CSV'),
-            el('button', { class: 'btn', onclick: () => window.print() }, '🖨️ Print / Save PDF'),
+            el('button', { class: 'btn btn--ghost', onclick: () => copyBhisText(rep) }, ico('📋', 'Copy as text')),
+            el('button', { class: 'btn btn--ghost', onclick: () => downloadBhisCsv(rep) }, ico('⬇️', 'Download CSV')),
+            el('button', { class: 'btn', onclick: () => window.print() }, ico('🖨️', 'Print / Save PDF')),
         ]);
         return el('div', {}, [actions, sheet]);
     }
@@ -1747,10 +1836,10 @@
     function downloadBhisCsv(rep) {
         const byDay = {};
         rep.reports.forEach(r => { byDay[r.day] = r; });
-        const rows = [['Date', 'Tasks completed', 'Tasks scheduled', 'Completion %', 'Mood', 'Behavior (1-5)', 'Highlights', 'Challenges', 'Notes', 'Goals']];
+        const rows = [['Date', 'Tasks fully done', 'Tasks partly done', 'Tasks scheduled', 'Completion %', 'Mood', 'Behavior (1-5)', 'Highlights', 'Challenges', 'Notes', 'Goals']];
         rep.daily.forEach(d => {
             const r = byDay[d.day] || {};
-            rows.push([d.day, d.completed, (d.scheduled === undefined ? '' : d.scheduled), d.percent, r.mood || '', r.behaviorRating || '',
+            rows.push([d.day, d.completed, d.partly || 0, (d.scheduled === undefined ? '' : d.scheduled), d.percent, r.mood || '', r.behaviorRating || '',
                 r.highlights || '', r.challenges || '', r.notes || '', r.goals || '']);
         });
         const csv = rows.map(r => r.map(csvCell).join(',')).join('\r\n');
@@ -1902,7 +1991,9 @@
         content.appendChild(el('div', { class: 'field field--check' }, [box, el('label', { for: 'n-parent', text: ' Send me parent alerts' })]));
         content.appendChild(el('p', { class: 'muted', text: 'Kids turn on their own chore reminders from their board after they sign in.' }));
         if (Notification.permission === 'denied') {
-            content.appendChild(el('p', { class: 'field-err', text: 'Notifications are blocked for this site. Allow them in your browser settings first.' }));
+            content.appendChild(el('p', { class: 'field-err', id: 'n-blocked', text: 'Notifications are blocked for this site. Allow them in your browser settings first.' }));
+            box.disabled = true;
+            box.setAttribute('aria-describedby', 'n-blocked');
         }
         actions = el('div', { class: 'modal__actions' }, [
             el('button', { class: 'btn btn--ghost', onclick: closeModal }, 'Cancel'),

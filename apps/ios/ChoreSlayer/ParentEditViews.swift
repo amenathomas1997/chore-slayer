@@ -7,12 +7,26 @@ struct ChildEditorView: View {
     @State private var emoji = "🙂"
     @State private var color = "#5b8def"
     @State private var confirmDelete = false
+    @State private var confirmRemove = false
+    @State private var didInit = false
 
     private let emojis = ["🙂", "😀", "🦊", "🐱", "🦄", "🐶", "🌟", "🚀", "🦖", "🐢"]
+    /// Plain names, so VoiceOver, Voice Control and Dragon users can say them.
+    private let emojiNames = ["🙂": "Smiling face", "😀": "Grinning face", "🦊": "Fox", "🐱": "Cat", "🦄": "Unicorn",
+                              "🐶": "Dog", "🌟": "Star", "🚀": "Rocket", "🦖": "Dinosaur", "🐢": "Turtle"]
     private let colors = ["#5b8def", "#e8618c", "#33b679", "#f5a623", "#6d4fc0", "#16a3b8"]
     private let grid = [GridItem(.adaptive(minimum: 52), spacing: 8)]
 
     private var existing: Child? { model.editingChild }
+    /// Something differs from what was loaded (or from a blank new child).
+    private var dirty: Bool {
+        guard didInit else { return false }
+        if let c = existing {
+            return first != c.firstName || last != c.lastName || emoji != c.emoji || color != c.color
+        }
+        return !first.trimmingCharacters(in: .whitespaces).isEmpty || !last.trimmingCharacters(in: .whitespaces).isEmpty
+            || emoji != "🙂" || color != "#5b8def"
+    }
     private var canSave: Bool {
         !model.busy
             && !first.trimmingCharacters(in: .whitespaces).isEmpty
@@ -24,8 +38,8 @@ struct ChildEditorView: View {
             Text(existing == nil ? "Add a child" : "Edit child")
                 .font(.title2.bold()).screenHeading()
 
-            TextField("First name", text: $first).textFieldStyle(.roundedBorder)
-            TextField("Last name", text: $last).textFieldStyle(.roundedBorder)
+            LabeledTextField(title: "First name", text: $first)
+            LabeledTextField(title: "Last name", text: $last)
 
             Text("Icon").font(.subheadline.weight(.semibold)).accessibilityAddTraits(.isHeader)
             LazyVGrid(columns: grid, spacing: 8) {
@@ -39,11 +53,12 @@ struct ChildEditorView: View {
                                 .strokeBorder(emoji == e ? Color.brand : Color.clear, lineWidth: 3))
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Icon \(e)")
-                    .accessibilityAddTraits(.isButton)
-                    .accessibilityAddTraits(emoji == e ? .isSelected : .isButton)
+                    .accessibilityLabel("\(emojiNames[e] ?? "Emoji") icon")
+                    .accessibilityInputLabels([emojiNames[e] ?? "Emoji"])
+                    .accessibilityAddTraits(emoji == e ? [.isButton, .isSelected] : .isButton)
                 }
             }
+            .choiceGroup("Icon")
 
             Text("Color").font(.subheadline.weight(.semibold)).accessibilityAddTraits(.isHeader)
             HStack(spacing: 12) {
@@ -67,10 +82,10 @@ struct ChildEditorView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(colorName(hex))
-                    .accessibilityAddTraits(.isButton)
-                    .accessibilityAddTraits(color == hex ? .isSelected : .isButton)
+                    .accessibilityAddTraits(color == hex ? [.isButton, .isSelected] : .isButton)
                 }
             }
+            .choiceGroup("Color")
 
             Button(existing == nil ? "Add child" : "Save changes") {
                 Task {
@@ -87,9 +102,7 @@ struct ChildEditorView: View {
 
             if existing != nil {
                 Divider()
-                Button("Remove (keep their history)") {
-                    Task { await model.removeManagedChild(forever: false) }
-                }
+                Button("Remove (keep their history)") { confirmRemove = true }
                 .buttonStyle(.bordered)
                 .frame(maxWidth: .infinity, minHeight: 44)
                 Button("Delete forever", role: .destructive) { confirmDelete = true }
@@ -104,6 +117,19 @@ struct ChildEditorView: View {
             } else {
                 first = ""; last = ""; emoji = "🙂"; color = "#5b8def"
             }
+            didInit = true
+            model.childEditorDirty = false
+        }
+        // Back asks "Discard changes?" while there are unsaved edits.
+        .onChange(of: dirty) { model.childEditorDirty = $0 }
+        .onDisappear { model.childEditorDirty = false }
+        .confirmationDialog("Remove \(existing?.firstName ?? "this child")?", isPresented: $confirmRemove, titleVisibility: .visible) {
+            Button("Remove", role: .destructive) {
+                Task { await model.removeManagedChild(forever: false) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("They'll be taken off the children list. Their check-offs and reports are kept.")
         }
         .alert("Delete \(existing?.firstName ?? "child") forever?", isPresented: $confirmDelete) {
             Button("Delete forever", role: .destructive) {

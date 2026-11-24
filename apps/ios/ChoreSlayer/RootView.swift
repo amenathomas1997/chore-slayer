@@ -16,6 +16,7 @@ struct RootView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         if let err = model.error {
                             ErrorBanner(message: err) { model.error = nil }
+                                .id(Self.errorID)
                         }
                         if let note = model.notice {
                             NoticeBanner(message: note) { model.notice = nil }
@@ -40,18 +41,25 @@ struct RootView: View {
                         UIAccessibility.post(notification: .screenChanged, argument: nil)
                     }
                 }
+                // Bring a new error banner on screen, so it isn't hidden above a long page.
+                .onChange(of: model.error) { newValue in
+                    guard newValue != nil else { return }
+                    DispatchQueue.main.async {
+                        withAnimation { proxy.scrollTo(Self.errorID, anchor: .top) }
+                    }
+                }
             }
             // Any tap counts as parent activity for the 10-minute idle lock.
             // (Typing and VoiceOver focus are counted in AppModel.)
             .simultaneousGesture(TapGesture().onEnded { model.markParentActivity() })
             // VoiceOver two-finger scrub goes back, like the Back button.
-            .accessibilityAction(.escape) { if showsBack { model.back() } }
+            .accessibilityAction(.escape) { if showsBack { model.requestBack() } }
             .navigationTitle(screenTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 if showsBack {
                     ToolbarItem(placement: .topBarLeading) {
-                        Button { model.back() } label: {
+                        Button { model.requestBack() } label: {
                             Image(systemName: "chevron.backward")
                         }
                         .accessibilityLabel("Back")
@@ -61,6 +69,7 @@ struct RootView: View {
                     ToolbarItemGroup(placement: .topBarTrailing) {
                         Button("🧒 Kid sign-in") { model.handToKid() }
                             .accessibilityLabel("Kid sign-in: sign the parent out and let a kid sign in")
+                            .accessibilityInputLabels(["Kid sign-in"])
                         Menu {
                             Button("Family code") { model.markParentActivity(); showFamilyCode = true }
                             Button("Notifications") { model.openNotifications() }
@@ -100,6 +109,12 @@ struct RootView: View {
         } message: {
             Text("The parent area locks in 60 seconds.")
         }
+        .confirmationDialog("Discard changes?", isPresented: $model.confirmDiscard, titleVisibility: .visible) {
+            Button("Discard", role: .destructive) { model.back() }
+            Button("Keep editing", role: .cancel) {}
+        } message: {
+            Text("Your changes on this screen haven't been saved.")
+        }
         .onReceive(idleTimer) { _ in model.checkParentIdle() }
         .onChange(of: scenePhase) { phase in
             if phase == .active { model.checkParentIdle() }
@@ -114,6 +129,7 @@ struct RootView: View {
     }
 
     private static let topID = "screen-top"
+    private static let errorID = "error-banner"
 
     /// Right after a screen change, wait until the new screen's heading has been read.
     private var statusDelay: Double {

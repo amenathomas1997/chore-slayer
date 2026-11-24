@@ -79,8 +79,16 @@ struct KidLoginView: View {
                 .font(.title2.bold())
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .screenHeading()
-            TextField("First name", text: $first).textFieldStyle(.roundedBorder)
-            TextField("Last name", text: $last).textFieldStyle(.roundedBorder)
+            LabeledField(title: "First name") {
+                TextField("First name", text: $first, prompt: Text(""))
+                    .textFieldStyle(.roundedBorder)
+                    .textContentType(.givenName)
+            }
+            LabeledField(title: "Last name") {
+                TextField("Last name", text: $last, prompt: Text(""))
+                    .textFieldStyle(.roundedBorder)
+                    .textContentType(.familyName)
+            }
             Button("See my chores") {
                 Task {
                     await model.kidLogin(
@@ -118,7 +126,7 @@ struct BoardView: View {
                     .font(.title2.bold())
                     .accessibilityLabel("\(child.firstName)'s day")
                     .screenHeading()
-                Text(board.day).font(.footnote).foregroundStyle(Color.muted)
+                Text(displayDay(board.day)).font(.footnote).foregroundStyle(Color.muted)
                 Text(countsLine(board.counts))
                     .font(.headline)
                     .accessibilityLabel(countsSpoken(board.counts))
@@ -126,6 +134,7 @@ struct BoardView: View {
                     .accessibilityHidden(true)
                 if board.tasks.isEmpty {
                     Text("🎉 Nothing scheduled for today!")
+                        .accessibilityLabel("Nothing scheduled for today!")
                 }
                 ForEach(slots) { slot in
                     SlotSection(
@@ -183,7 +192,7 @@ private struct SlotSection: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text(label)
                     .font(.subheadline.weight(.semibold))
-                    .accessibilityLabel(String(label.drop { !$0.isLetter }))
+                    .accessibilityLabel(plainSpoken(label))
                     .accessibilityAddTraits(.isHeader)
                 ForEach(items) { task in
                     TaskRow(task: task, onToggle: { onToggle(task) }, onToggleSub: onToggleSub)
@@ -238,7 +247,7 @@ struct TaskRow: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(task.title).font(.body.weight(.medium))
                         if let t = task.time {
-                            Text("at \(t)").font(.footnote).foregroundStyle(Color.muted)
+                            Text("at \(displayTime(t))").font(.footnote).foregroundStyle(Color.muted)
                         }
                         if let st = statusText {
                             Text(st).font(.footnote.weight(.semibold))
@@ -252,7 +261,7 @@ struct TaskRow: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("\(task.title)\(task.time.map { ", at \($0)" } ?? ""), \(task.type)")
+            .accessibilityLabel("\(task.title)\(task.time.map { ", at \(displayTime($0))" } ?? ""), \(task.type)")
             .accessibilityValue(stateWord)
             .accessibilityAddTraits(.isButton)
 

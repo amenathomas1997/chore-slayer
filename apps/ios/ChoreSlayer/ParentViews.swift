@@ -9,15 +9,7 @@ struct ParentLoginView: View {
                 .font(.title2.bold())
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .screenHeading()
-            SecureField("PIN", text: $pin)
-                .textFieldStyle(.roundedBorder)
-                .keyboardType(.numberPad)
-                .onChange(of: pin) { newValue in
-                    let digits = newValue.filter(\.isNumber)
-                    if digits != newValue || digits.count > 8 {
-                        pin = String(digits.prefix(8))
-                    }
-                }
+            PinField(title: "Parent PIN", pin: $pin, isNew: false)
             Button("Sign in") { Task { await model.parentLogin(pin: pin) } }
                 .primaryButton()
                 .frame(maxWidth: .infinity, minHeight: 48)
@@ -49,7 +41,7 @@ struct ChildrenView: View {
                         Text(child.emoji).font(.title).accessibilityHidden(true)
                         VStack(alignment: .leading) {
                             Text("\(child.firstName) \(child.lastName)").font(.headline)
-                            Text("Tap to manage").font(.footnote).foregroundStyle(Color.muted)
+                            Text("Manage").font(.footnote).foregroundStyle(Color.muted)
                         }
                         Spacer()
                         Image(systemName: "chevron.right").foregroundStyle(Color.muted).accessibilityHidden(true)

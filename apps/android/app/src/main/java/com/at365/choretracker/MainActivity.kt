@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -65,7 +66,8 @@ class MainActivity : ComponentActivity() {
         )
         // Debug builds only: `adb shell am start -n com.at365.choreslayer/com.at365.choretracker.MainActivity -e apiBase <url>`
         if (BuildConfig.DEBUG) intent?.getStringExtra("apiBase")?.let { model.session.debugBase = it }
-        Push.createChannel(this)
+        Push.createChannels(this)
+        handleNotificationIntent(intent)
         // The parent idle lock must count TalkBack, Switch Access and Voice Access actions too.
         // Those don't always reach onUserInteraction or pointerInput, but they do send these events.
         window.decorView.accessibilityDelegate = object : View.AccessibilityDelegate() {
@@ -83,6 +85,19 @@ class MainActivity : ComponentActivity() {
                 ChoreTheme { Root(model) }
             }
         }
+    }
+
+    /** A tapped notification while the app is already open (singleTop): no restart, the kid stays signed in. */
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleNotificationIntent(intent)
+    }
+
+    private fun handleNotificationIntent(intent: android.content.Intent?) {
+        val childId = intent?.getStringExtra(Push.EXTRA_CHILD_ID) ?: return
+        if (intent.getStringExtra(Push.EXTRA_TYPE) == "reminder") model.openFromNotification(childId)
+        intent.removeExtra(Push.EXTRA_CHILD_ID)
     }
 
     /** Touches, hardware keys and trackball: all count as parent activity for the idle lock. */
@@ -120,6 +135,7 @@ fun screenTitle(m: AppModel): String = when (m.screen) {
 fun Root(m: AppModel) {
     var showCode by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
+    var askDiscard by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { if (m.statusInfo == null) m.connect() }
     // The 10-minute parent lock: check every 30 s and whenever the app comes back.
@@ -130,14 +146,16 @@ fun Root(m: AppModel) {
         Screen.Connecting, Screen.ConnectDevice, Screen.Role, Screen.ParentHome -> false
         else -> true
     }
-    BackHandler(enabled = canGoBack) { m.back() }
+    // Back from an editor with unsaved changes asks first (top bar and system Back alike).
+    val goBack = { if (m.unsavedChanges) askDiscard = true else m.back() }
+    BackHandler(enabled = canGoBack) { goBack() }
 
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
                 title = { Text("Chore Slayer", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 navigationIcon = {
-                    if (canGoBack) IconButton(onClick = { m.back() }) {
+                    if (canGoBack) IconButton(onClick = { goBack() }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 },
@@ -145,7 +163,7 @@ fun Root(m: AppModel) {
                     if (m.isParent) {
                         TextButton(onClick = { m.handToKid() },
                             modifier = Modifier.semantics { contentDescription = "Kid sign-in: sign the parent out and let a kid sign in" }) {
-                            Text("🧒 Kid sign-in")
+                            Text("Kid sign-in")
                         }
                         IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "Parent options") }
                         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
@@ -172,7 +190,10 @@ fun Root(m: AppModel) {
                 // Always composed, outside the scrolling content: errors and notices stay on screen
                 // and are announced (live regions) wherever the button that caused them is.
                 StatusArea(m)
-                if (m.busy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 16.dp).semantics { contentDescription = "Loading" })
+                // The bar's space is always reserved, so content doesn't jump when loading starts or ends.
+                Box(Modifier.fillMaxWidth().height(4.dp).padding(horizontal = 16.dp)) {
+                    if (m.busy) LinearProgressIndicator(Modifier.fillMaxWidth().semantics { contentDescription = "Loading" })
+                }
                 // A fresh scroll position per screen, and a pane title so TalkBack announces the new screen.
                 key(m.screen) {
                     val scroll = rememberScrollState()
@@ -215,6 +236,16 @@ fun Root(m: AppModel) {
             title = { Text("Still there?") },
             text = { Text("The parent area locks in 60 seconds.") },
             confirmButton = { TextButton(onClick = { m.stayParentSignedIn() }) { Text("Stay signed in") } },
+        )
+    }
+
+    if (askDiscard) {
+        AlertDialog(
+            onDismissRequest = { askDiscard = false },
+            title = { Text("Discard changes?") },
+            text = { Text("You have changes that aren't saved. If you go back now, they'll be lost.") },
+            confirmButton = { TextButton(onClick = { askDiscard = false; m.discardAndGoBack() }) { Text("Discard", color = Palette.danger) } },
+            dismissButton = { TextButton(onClick = { askDiscard = false }) { Text("Keep editing") } },
         )
     }
 

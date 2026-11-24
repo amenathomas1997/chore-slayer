@@ -23,6 +23,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -52,8 +54,8 @@ fun RoleScreen(m: AppModel) {
     var confirmForget by remember { mutableStateOf(false) }
     Title("Who's using the app?")
     m.family?.let { Muted("Family: ${it.name ?: it.code}") }
-    PrimaryButton("🧒 I'm a Kid") { m.chooseKid() }
-    PrimaryButton("👪 Parent / Admin", color = Palette.brandPurple) { m.chooseParent() }
+    PrimaryButton("I'm a Kid", icon = "🧒") { m.chooseKid() }
+    PrimaryButton("Parent / Admin", icon = "👪", color = Palette.brandPurple) { m.chooseParent() }
     LinkButton("Use a different family") { confirmForget = true }
     if (confirmForget) {
         AlertDialog(
@@ -70,17 +72,22 @@ fun RoleScreen(m: AppModel) {
 fun KidLoginScreen(m: AppModel) {
     var first by rememberSaveable { mutableStateOf("") }
     var last by rememberSaveable { mutableStateOf("") }
+    // "We couldn't find that name": shown under First name, which gets focus.
+    val err = m.fieldError?.takeIf { it.field == "kidName" }
+    val firstFocus = remember { FocusRequester() }
+    LaunchedEffect(err?.seq) { if (err != null) firstFocus.requestFocus() }
     Title("Type your name")
-    Field(first, { first = it }, "First name")
-    Field(last, { last = it }, "Last name")
+    Field(first, { first = it; m.fieldError = null }, "First name", error = err?.message, focus = firstFocus)
+    Field(last, { last = it; m.fieldError = null }, "Last name", error = if (err != null) "Check this name too." else null)
     PrimaryButton("See my chores", enabled = !m.busy && first.isNotBlank() && last.isNotBlank()) {
         m.kidLogin(first.trim(), last.trim())
     }
 }
 
+/** Slot id, decorative emoji (not read aloud), name. */
 private val slotLabels = listOf(
-    "morning" to "🌅 Morning", "midday" to "☀️ Midday", "afternoon" to "🌤️ Afternoon",
-    "evening" to "🌙 Evening", "anytime" to "🕓 Anytime",
+    Triple("morning", "🌅", "Morning"), Triple("midday", "☀️", "Midday"), Triple("afternoon", "🌤️", "Afternoon"),
+    Triple("evening", "🌙", "Evening"), Triple("anytime", "🕓", "Anytime"),
 )
 
 @Composable
@@ -89,7 +96,7 @@ fun BoardScreen(m: AppModel) {
     val child = m.child
     if (board == null || child == null) { Muted("Loading…"); return }
     Title("${child.emoji} ${child.firstName}'s day", a11y = "${child.firstName}'s day")
-    Muted(board.day)
+    Muted(prettyDate(board.day))
     Text(progressText(board.counts), style = MaterialTheme.typography.titleMedium)
     LinearProgressIndicator(progress = { board.counts.percent.coerceIn(0, 100) / 100f },
         modifier = Modifier.fillMaxWidth().clearAndSetSemantics { })
@@ -97,16 +104,16 @@ fun BoardScreen(m: AppModel) {
     // so each new message is a text change the polite live region announces.
     Text(m.kidStatus, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium,
         modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite })
-    if (board.tasks.isEmpty()) Text("🎉 Nothing scheduled for today!")
-    for ((id, label) in slotLabels) {
+    if (board.tasks.isEmpty()) IconText("🎉", "Nothing scheduled for today!")
+    for ((id, icon, label) in slotLabels) {
         val items = board.tasks.filter { it.slot == id }
         if (items.isEmpty()) continue
-        SectionHeader(label)
+        SectionHeader(label, icon = icon)
         // key(): focus and state follow the task, not its position, if the list changes.
         items.forEach { t -> key(t.id) { TaskRow(t) { taskId -> m.toggle(taskId) } } }
     }
     Gap(8)
-    PrimaryButton("🎉 See my day", color = Palette.goodGreen) { m.openKidSummary() }
+    PrimaryButton("See my day", icon = "🎉", color = Palette.goodGreen) { m.openKidSummary() }
     KidReminderCard(m)
 }
 
@@ -140,7 +147,7 @@ private fun TaskRow(task: DayTask, onToggle: (String) -> Unit) {
             Modifier.fillMaxWidth().heightIn(min = 52.dp)
                 .triStateToggleable(state = toggle, role = Role.Checkbox) { onToggle(task.id) }
                 .semantics(mergeDescendants = true) {
-                    contentDescription = task.title + (task.time?.let { ", at $it" } ?: "") + ", " + task.type
+                    contentDescription = task.title + (prettyTime(task.time)?.let { ", at $it" } ?: "") + ", " + task.type
                     stateDescription = state
                 }
                 .padding(4.dp),
@@ -151,7 +158,7 @@ private fun TaskRow(task: DayTask, onToggle: (String) -> Unit) {
             Text(" ${task.emoji} ", modifier = Modifier.clearAndSetSemantics { })
             Column(Modifier.weight(1f).clearAndSetSemantics { }) {
                 Text(task.title, fontWeight = FontWeight.Medium)
-                task.time?.let { Muted("at $it") }
+                prettyTime(task.time)?.let { Muted("at $it") }
                 when {
                     task.complete -> Text("All done!", color = Palette.goodGreen, fontWeight = FontWeight.Bold)
                     partial -> Text("$left of ${subs.size} ${stepWord(subs.size)} left", color = Color(0xFF6B4500), fontWeight = FontWeight.Bold)
@@ -190,14 +197,15 @@ private fun KidReminderCard(m: AppModel) {
     if (!m.pushAvailable) return
     val ask = rememberNotificationPermission { granted -> m.enableKidReminders(granted) }
     if (m.kidRemindersOn) {
-        Muted("🔔 Reminders are on for this device.", Modifier.fillMaxWidth().padding(top = 4.dp))
+        IconText("🔔", "Reminders are on for this device.", Modifier.fillMaxWidth().padding(top = 4.dp),
+            color = Palette.muted, style = MaterialTheme.typography.bodyMedium)
         return
     }
     if (m.pushAllowed == false) return
     Card(Modifier.padding(top = 8.dp)) {
         SectionHeader("Chore reminders")
         Text("Get a reminder on this device when each chore is due.")
-        PrimaryButton("🔔 Remind me when it's time", enabled = !m.busy) { ask() }
+        PrimaryButton("Remind me when it's time", icon = "🔔", enabled = !m.busy) { ask() }
     }
 }
 
@@ -212,14 +220,18 @@ fun KidSummaryScreen(m: AppModel) {
     val stars = (pct / 20.0).roundToInt().coerceIn(0, 5)
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Title("${child.firstName}'s Day", center = true)
-        Muted(board.day)
+        Muted(prettyDate(board.day))
         Box(Modifier.size(150.dp).semantics(mergeDescendants = true) { contentDescription = "$pct percent of steps done" },
             contentAlignment = Alignment.Center) {
             CircularProgressIndicator(progress = { pct / 100f }, strokeWidth = 13.dp, modifier = Modifier.size(150.dp),
                 color = Palette.brand, trackColor = Color(0xFFE5E5EA))
             Text("$pct%", fontSize = 30.sp, fontWeight = FontWeight.Bold, modifier = Modifier.clearAndSetSemantics { })
         }
-        Text(cheer(pct), style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
+        val (cheerText, cheerIcon) = cheer(pct)
+        Row(Modifier.semantics(mergeDescendants = true) { }, verticalAlignment = Alignment.CenterVertically) {
+            Text(cheerText, style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
+            Text(" $cheerIcon", style = MaterialTheme.typography.titleMedium, modifier = Modifier.clearAndSetSemantics { })
+        }
         Text("★".repeat(stars) + "☆".repeat(5 - stars), fontSize = 26.sp, color = Color(0xFF9A5B00),
             modifier = Modifier.semantics { contentDescription = "$stars out of 5 stars" })
         val tiles = buildList {
@@ -264,15 +276,16 @@ fun KidSummaryScreen(m: AppModel) {
                 }
             }
         }
-        SecondaryButton("← Back to my chores") { m.back() }
+        SecondaryButton("Back to my chores", icon = "←") { m.back() }
     }
 }
 
+/** The cheer and its decorative emoji (shown, not read aloud). */
 private fun cheer(pct: Int) = when {
-    pct >= 100 -> "Amazing! You finished everything! 🏆"
-    pct >= 75 -> "Awesome work — almost there! 🌟"
-    pct >= 50 -> "Great job, halfway and beyond! 💪"
-    pct >= 25 -> "Good start — keep going! 🙌"
-    pct > 0 -> "You've begun — you can do it! 👍"
-    else -> "Let's get started when you're ready! 🌱"
+    pct >= 100 -> "Amazing! You finished everything!" to "🏆"
+    pct >= 75 -> "Awesome work — almost there!" to "🌟"
+    pct >= 50 -> "Great job, halfway and beyond!" to "💪"
+    pct >= 25 -> "Good start — keep going!" to "🙌"
+    pct > 0 -> "You've begun — you can do it!" to "👍"
+    else -> "Let's get started when you're ready!" to "🌱"
 }
