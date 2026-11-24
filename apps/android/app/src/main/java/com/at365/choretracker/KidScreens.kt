@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -103,7 +104,8 @@ fun BoardScreen(m: AppModel) {
     // What the last check-off did ("Brush teeth checked. 2 more steps below."). Always composed,
     // so each new message is a text change the polite live region announces.
     Text(m.kidStatus, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium,
-        modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite })
+        modifier = Modifier.fillMaxWidth().then(if (m.kidStatus.isEmpty()) Modifier.height(0.dp) else Modifier)
+            .semantics { liveRegion = LiveRegionMode.Polite })
     if (board.tasks.isEmpty()) IconText("🎉", "Nothing scheduled for today!")
     for ((id, icon, label) in slotLabels) {
         val items = board.tasks.filter { it.slot == id }

@@ -47,6 +47,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -328,7 +329,9 @@ fun Banner(text: String, isError: Boolean, onDismiss: () -> Unit) {
  */
 @Composable
 fun StatusArea(m: AppModel) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    // Both lines stay composed (so their live regions keep working) but take no
+    // space while empty, so screens don't open with a blank band under the top bar.
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
         StatusLine(m.error?.let { "Error: $it" } ?: "", isError = true) { m.error = null }
         StatusLine(m.notice ?: "", isError = false) { m.notice = null }
     }
@@ -340,7 +343,7 @@ private fun StatusLine(text: String, isError: Boolean, onDismiss: () -> Unit) {
     Row(
         (if (shown) Modifier.padding(top = 8.dp).fillMaxWidth().clip(RoundedCornerShape(12.dp))
             .background(if (isError) Palette.errorBg else Palette.noticeBg).padding(start = 12.dp)
-        else Modifier.fillMaxWidth()),
+        else Modifier.fillMaxWidth().height(0.dp)),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(text, color = if (isError) Palette.errorInk else Palette.goodGreen,
