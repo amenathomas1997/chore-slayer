@@ -201,8 +201,13 @@ struct LabeledField<Content: View>: View {
     @ViewBuilder let content: () -> Content
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
+            // The visible label is hidden from VoiceOver so it isn't read twice, so the
+            // field itself must carry the name: a field with an empty placeholder
+            // (prompt: Text("")) is otherwise read with no name at all.
             Text(title).font(.subheadline.weight(.semibold)).accessibilityHidden(true)
             content()
+                .accessibilityLabel(Text(title))
+                .accessibilityHint(Text(hint ?? ""))
             if let hint {
                 Text(hint).font(.footnote).foregroundStyle(Color.muted).accessibilityHidden(true)
             }
