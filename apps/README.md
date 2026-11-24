@@ -5,9 +5,10 @@ that connect to the Chore Slayer API.
 
 - **Backend:** the same `api.php` you deployed, live at
   `https://chores.a-t-365.com/api.php`. Full contract: [`../API.md`](../API.md).
-- The server URL is editable on the app's first screen, so you can point a build
-  at a test server without recompiling. The default is baked into
-  `Session.kt` (Android) / `Session.swift` (iOS).
+- Release builds always use the live server. Debug builds can point at a test
+  server: `CHORE_API_BASE` env var on iOS, `-e apiBase <url>` on Android
+  (see below). The default lives in `Session.swift` (iOS) and
+  `app/build.gradle.kts` → `API_BASE` (Android).
 
 > ⚠️ **Don't upload `apps/` to the web server.** It's app source code, not part
 > of the website. When you update the backend in cPanel, upload only `api.php`,
@@ -17,47 +18,71 @@ that connect to the Chore Slayer API.
 
 ## Status
 
-| Flow | Android | iOS |
-|---|---|---|
-| Connect + version check | ✅ | ⏳ next |
-| Kid login (by name) | ✅ | ⏳ |
-| Kid board: tasks by time-of-day, tap to check off, progress, follow-up checks | ✅ | ⏳ |
-| Parent PIN login (token stored) | ✅ | ⏳ |
-| Parent: list children → open a child's board | ✅ | ⏳ |
-| Parent: add/edit children, tasks (with schedule), follow-up checks, daily reports | ✅ | ⏳ |
-| Parent: BHIS range reports (stats, daily table, task frequency, notes, share-as-text) | ✅ | ⏳ |
-| Parent: "Adjust a day" — per-day overrides (nudge a task's slot/time or skip it for one day) | ✅ | ⏳ |
+Both apps match the web app: link a device to a family (or create one), kid
+sign-in by name, the kid board with follow-up checks and "See my day", parent
+PIN sign-in with a 10-minute idle lock, children, tasks and schedules, daily
+and BHIS reports, "Adjust a day", family code, change PIN, delete family, and
+push notifications (kid chore reminders, parent alerts).
 
-The first slice covers the **daily core** (the kid checking things off and the
-parent reviewing). Heavier parent management screens are the next milestone;
-they already work in the web app in the meantime.
+| | Android | iOS |
+|---|---|---|
+| All app flows | ✅ (rebuilt Nov 2026) | ✅ |
+| Push notifications | ✅ code; needs Firebase setup (below) | ✅ code; needs the APNs key on the server |
 
 ---
 
 ## Android — run it
 
-**You need:** [Android Studio](https://developer.android.com/studio) (current
-stable — a 2025/2026 build). It bundles the JDK and Android SDK it needs.
+**You need:** [Android Studio](https://developer.android.com/studio). It bundles
+the JDK and Android SDK.
 
-1. **Open** Android Studio → **Open** → pick the `apps/android` folder.
-2. Let it **Gradle sync** (first time it downloads Gradle 9.4.1 + dependencies —
-   give it a few minutes).
-3. Pick an emulator (or a USB device with USB debugging on) and press **Run ▶**.
-4. On the first screen the server URL is prefilled
-   (`https://chores.a-t-365.com/api.php`) — tap **Connect**.
+1. **Open** Android Studio → **Open** → pick the `apps/android` folder, and let
+   it Gradle sync.
+2. Pick an emulator or a USB device and press **Run ▶**. Release and debug
+   builds talk to `https://chores.a-t-365.com/api.php`.
 
-**Try it:** Connect → *I'm a Kid* → type a child's first & last name → check off
-tasks and watch the progress bar. Or Connect → *Parent* → enter your PIN → tap a
-child to see their board.
+Command line (uses Android Studio's JDK):
+
+```bash
+cd apps/android
+JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" ./gradlew assembleDebug
+```
+
+**Test server (debug builds only):** start the app with a different API, e.g. a
+local PHP server reached from the emulator at `10.0.2.2`:
+
+```bash
+adb shell am start -n com.at365.choreslayer/com.at365.choretracker.MainActivity -e apiBase http://10.0.2.2:8766/api.php
+```
+
+Debug builds allow plain HTTP for this; release builds don't.
 
 Notes:
-- Min Android 7.0 (API 24). No third-party networking libraries — it uses the
-  platform `HttpURLConnection` + `org.json`.
-- A Gradle **wrapper is included**, so `./gradlew :app:assembleDebug` works on the
-  command line too (point `JAVA_HOME` at Android Studio's bundled JDK). Verified
-  building on **AGP 9.2.1 / Kotlin 2.2.10 / Gradle 9.4.1 / compileSdk 37**.
-- **Before release:** the parent token is stored in plain `SharedPreferences` for
-  now (flagged in `Session.kt`). Switch to `EncryptedSharedPreferences`.
+- Min Android 8.0 (API 26), target/compile SDK 36, AGP 8.6.1, Kotlin 2.0.21,
+  Gradle 8.9 (wrapper included).
+- No third-party networking libraries: platform `HttpURLConnection` + `org.json`.
+- The parent sign-in token is kept only in memory, so closing the app signs the
+  parent out (same as iOS and the web).
+- `local.properties`, `keystore.properties`, keystores and `google-services.json`
+  are gitignored. Never commit them.
+
+### Push notifications on Android (one-time setup)
+
+The app builds and runs without Firebase; push simply stays off and the
+Notifications screen says it isn't available. To turn it on:
+
+1. In the [Firebase console](https://console.firebase.google.com), open (or
+   create) a project and **add an Android app** with package name
+   `com.at365.choreslayer`.
+2. Download its **`google-services.json`** and put it at
+   `apps/android/app/google-services.json`. The build applies the Google
+   Services plugin automatically once that file exists.
+3. In the same Firebase project: Project settings → **Service accounts** →
+   generate a private key (JSON). Upload it to the server outside the web
+   folder (e.g. `/home/at365/keys/`), then point the server config at it:
+   `config.php` → `'push' => ['fcm_service_account_path' => '/home/at365/keys/<file>.json', …]`.
+4. Rebuild the app. Kids then see "Remind me when it's time" on their board,
+   and parents get the Notifications switch in the ⋮ menu.
 
 ### Android project layout
 ```
@@ -65,19 +90,22 @@ apps/android/
   app/src/main/
     AndroidManifest.xml
     java/com/at365/choretracker/
-      MainActivity.kt     ← entry point
-      Api.kt              ← API client + data models
-      Session.kt          ← stored base URL + parent token
-      AppViewModel.kt     ← state + actions
-      Ui.kt               ← all Compose screens
-    res/values/           ← app name + theme
-  build.gradle.kts, settings.gradle.kts, …
+      MainActivity.kt     ← entry point, top bar, screen switch, idle lock
+      AppModel.kt         ← state + actions (mirrors the iOS AppModel)
+      Api.kt              ← Session (server, family, parent token) + API client
+      Models.kt           ← JSON models
+      Push.kt             ← FCM token, notification channel, PushService
+      Ui.kt               ← theme + shared components
+      FamilyScreens.kt, KidScreens.kt, ParentScreens.kt, ReportScreens.kt
+    res/                  ← icons, theme, notification icon
+  app/src/debug/AndroidManifest.xml   ← debug-only: allow HTTP test servers
 ```
 
 ---
 
-## iOS — coming next
+## iOS
 
-The SwiftUI app (same flows, `URLSession` + `Codable`, token in the Keychain)
-lands in `apps/ios/` in the next step. It'll open in Xcode and run in the
-simulator with no extra tooling.
+`apps/ios` (SwiftUI). Generate the Xcode project with XcodeGen:
+`cd apps/ios && xcodegen generate && open ChoreSlayer.xcodeproj`. Push needs the
+Push Notifications capability (in `ChoreSlayer.entitlements`) and the APNs key
+settings in the server's `config.php` (`push.apns_*`).

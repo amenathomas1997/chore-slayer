@@ -1,0 +1,4 @@
+<resources>
+    <!-- A bare no-action-bar theme; Compose draws the UI and colors. -->
+    <style name="Theme.ChoreSlayer" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>
