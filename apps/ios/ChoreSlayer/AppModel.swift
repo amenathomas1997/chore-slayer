@@ -2,7 +2,7 @@ import Foundation
 import Combine
 
 enum Screen {
-    case connecting, connectDevice, role, kidLogin, kidBoard, kidSummary, changePin, deleteFamily, parentLogin, parentHome, childHub, childEditor
+    case connecting, connectDevice, role, kidLogin, kidBoard, kidSummary, changePin, deleteFamily, notifications, parentLogin, parentHome, childHub, childEditor
     case tasks, taskEditor, dailyReport, bhis, adjustDay, overrideEditor
 }
 
@@ -46,8 +46,16 @@ final class AppModel: ObservableObject {
     }()
     private var lastParentActivity = Date()
 
+    /// nil = not asked yet, false = turned off in Settings, true = allowed.
+    @Published var pushAllowed: Bool?
+    /// This device is getting reminders for the kid who is signed in.
+    @Published var kidRemindersOn = false
+
     init() {
         family = session.family
+        Push.shared.onTokenChange = { [weak self] new, old in
+            Task { await self?.reRegister(newToken: new, oldToken: old) }
+        }
     }
 
     // MARK: connect / role
@@ -99,6 +107,12 @@ final class AppModel: ObservableObject {
 
     /// Unlink this device from its family (back to "Connect this device").
     func forgetFamily() {
+        if let token = Push.shared.token {
+            let api = self.api
+            Task { await api.pushUnregister(token: token) }
+        }
+        Push.shared.clearChoices()
+        kidRemindersOn = false
         endParentSession()
         session.family = nil
         family = nil
@@ -117,7 +131,7 @@ final class AppModel: ObservableObject {
         case .kidLogin, .parentLogin: screen = .role
         case .kidBoard: screen = isParent ? .childHub : .kidLogin
         case .kidSummary: screen = .kidBoard
-        case .changePin, .deleteFamily: screen = .parentHome
+        case .changePin, .deleteFamily, .notifications: screen = .parentHome
         case .childHub: screen = .parentHome
         case .childEditor: screen = managedChild != nil ? .childHub : .parentHome
         case .tasks: screen = .childHub
@@ -141,6 +155,7 @@ final class AppModel: ObservableObject {
             self.board = try await self.api.daySummary(childId: c.id)
             self.screen = .kidBoard
         }
+        await syncKidReminders()
     }
 
     /// "See my day": the kid's end-of-day summary.
@@ -154,6 +169,12 @@ final class AppModel: ObservableObject {
 
     /// "Switch user" on a kid's board.
     func kidSwitchUser() {
+        if Push.shared.childId != nil, let token = Push.shared.token, let fam = family {
+            Push.shared.childId = nil
+            let api = self.api
+            Task { try? await api.pushRegister(token: token, familyId: fam.id, childId: "") }
+        }
+        kidRemindersOn = false
         child = nil
         board = nil
         screen = .kidLogin
@@ -189,6 +210,85 @@ final class AppModel: ObservableObject {
     }
 
     func openChangePin() { error = nil; notice = nil; screen = .changePin }
+    func openNotifications() { error = nil; notice = nil; screen = .notifications }
+
+    // MARK: push notifications
+
+    func refreshPushAllowed() async {
+        switch await Push.shared.authorizationStatus() {
+        case .notDetermined: pushAllowed = nil
+        case .denied: pushAllowed = false
+        default: pushAllowed = true
+        }
+    }
+
+    /// After a kid signs in: if notifications are already allowed here, move
+    /// this device's reminders to them without asking again.
+    func syncKidReminders() async {
+        await refreshPushAllowed()
+        guard let c = child, let fam = family else { kidRemindersOn = false; return }
+        guard pushAllowed == true, let token = Push.shared.token else { kidRemindersOn = false; return }
+        if Push.shared.childId == c.id { kidRemindersOn = true; return }
+        if (try? await api.pushRegister(token: token, familyId: fam.id, childId: c.id)) != nil {
+            Push.shared.childId = c.id
+            kidRemindersOn = true
+        }
+    }
+
+    /// "Remind me when it's time" on the kid board.
+    func enableKidReminders() async {
+        guard let c = child, let fam = family else { return }
+        busy = true
+        defer { busy = false }
+        guard let token = await Push.shared.requestToken() else {
+            await refreshPushAllowed()
+            error = pushAllowed == false
+                ? "Notifications are turned off for Chore Slayer. A parent can turn them on in the Settings app."
+                : "Reminders couldn't start on this device. Try again in a moment."
+            return
+        }
+        pushAllowed = true
+        do {
+            try await api.pushRegister(token: token, familyId: fam.id, childId: c.id)
+            Push.shared.childId = c.id
+            kidRemindersOn = true
+            notice = "Reminders are on. You'll get one when each chore is due."
+        } catch let e as ApiError { error = e.message } catch { self.error = error.localizedDescription }
+    }
+
+    /// Parent options → Notifications → Save.
+    func saveParentAlerts(_ on: Bool) async {
+        guard let fam = family else { return }
+        busy = true
+        defer { busy = false }
+        var token = Push.shared.token
+        if on {
+            token = await Push.shared.requestToken()
+            if token == nil {
+                await refreshPushAllowed()
+                error = "Notifications are turned off for Chore Slayer. Turn them on in the Settings app, then try again."
+                return
+            }
+        }
+        do {
+            if let token { try await api.pushRegister(token: token, familyId: fam.id, parentAlerts: on) }
+            Push.shared.parentAlerts = on
+            notice = on ? "Parent alerts are on for this device." : "Parent alerts are off for this device."
+            screen = .parentHome
+        } catch let e as ApiError { error = e.message } catch { self.error = error.localizedDescription }
+    }
+
+    /// iOS handed out a new token: move this device's choices over to it.
+    private func reRegister(newToken: String, oldToken: String?) async {
+        guard let fam = family, oldToken != nil else { return }
+        let p = Push.shared
+        guard p.childId != nil || p.parentAlerts else { return }
+        if let oldToken { await api.pushUnregister(token: oldToken) }
+        // parentAlerts can only be switched on with a parent signed in; the
+        // server keeps it off otherwise, and the parent can turn it on again.
+        _ = try? await api.pushRegister(token: newToken, familyId: fam.id, childId: p.childId ?? "",
+                                        parentAlerts: session.token != nil ? p.parentAlerts : nil)
+    }
 
     func changePin(current: String, new: String) async {
         await run {
@@ -254,6 +354,7 @@ final class AppModel: ObservableObject {
             self.board = try await self.api.daySummary(childId: c.id)
             self.screen = .kidBoard
         }
+        await syncKidReminders()
     }
 
     func addChildStart() { error = nil; editingChild = nil; screen = .childEditor }

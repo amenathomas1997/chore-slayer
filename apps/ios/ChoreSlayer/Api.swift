@@ -209,6 +209,21 @@ final class Api {
         _ = try? await raw("parent_logout", method: "POST")
     }
 
+    /// Register this iPhone/iPad for push. `childId` "" stops kid reminders;
+    /// leaving a field nil keeps what the server already has.
+    @discardableResult
+    func pushRegister(token: String, familyId: String, childId: String? = nil, parentAlerts: Bool? = nil) async throws -> PushDeviceState {
+        var body: [String: String] = ["platform": "ios", "token": token, "familyId": familyId,
+                                      "sandbox": Push.sandbox ? "1" : "0"]
+        if let childId { body["childId"] = childId }
+        if let parentAlerts { body["parentAlerts"] = parentAlerts ? "1" : "0" }
+        return try await send("push_register", method: "POST", body: body)
+    }
+
+    func pushUnregister(token: String) async {
+        _ = try? await raw("push_unregister", method: "POST", body: ["token": token])
+    }
+
     func childLogin(firstName: String, lastName: String, familyId: String) async throws -> Child {
         let r: ChildResp = try await send("child_login", method: "POST",
                                           body: ["firstName": firstName, "lastName": lastName, "familyId": familyId])
@@ -385,6 +400,7 @@ struct Family: Codable, Equatable {
     let code: String
     let name: String?
 }
+struct PushDeviceState: Codable { let registered: Bool; let childId: String?; let parentAlerts: Bool }
 private struct ChildResp: Codable { let child: Child }
 private struct ChildrenResp: Codable { let children: [Child] }
 private struct ToggleResp: Codable { let completed: Bool }

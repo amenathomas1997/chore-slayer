@@ -241,6 +241,7 @@ function delete_family_data(string $familyId): void
         }
         $pdo->prepare('DELETE FROM children WHERE family_id = ?')->execute([$familyId]);
         $pdo->prepare('DELETE FROM sessions WHERE family_id = ?')->execute([$familyId]);
+        $pdo->prepare('DELETE FROM push_devices WHERE family_id = ?')->execute([$familyId]);
         $pdo->prepare('DELETE FROM families WHERE id = ?')->execute([$familyId]);
         $pdo->commit();
     } catch (Throwable $e) {

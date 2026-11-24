@@ -136,6 +136,7 @@ struct BoardView: View {
                     .tint(.green)
                     .frame(maxWidth: .infinity, minHeight: 48)
                     .padding(.top, 8)
+                KidReminderCard(model: model)
             }
         } else {
             Text("Loading…")

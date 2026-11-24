@@ -189,6 +189,9 @@ textarea { min-height: 90px; resize: vertical; }
 }
 /* Inline validation error tied to a field via aria-describedby. */
 .field-err { color: var(--bad); font-weight: 600; font-size: .92rem; margin: 6px 0 0; }
+.field--check { display: flex; align-items: center; gap: 10px; }
+.field--check input[type=checkbox] { width: 24px; height: 24px; accent-color: var(--brand, #2b4fb0); flex: none; }
+.field--check label { font-weight: 600; }
 
 /* Accessible time picker (Hour : Minutes  AM/PM) built from native selects */
 .time-field { display: flex; align-items: center; gap: 8px; }

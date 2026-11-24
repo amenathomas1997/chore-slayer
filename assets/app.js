@@ -310,6 +310,9 @@
                 class: 'header-btn', onclick: () => showFamilyCode(state.family ? state.family.code : '', false)
             }, 'Family code'));
             box.appendChild(el('button', {
+                class: 'header-btn', onclick: () => openNotifications()
+            }, 'Notifications'));
+            box.appendChild(el('button', {
                 class: 'header-btn', onclick: () => openChangePin()
             }, 'Change PIN'));
             box.appendChild(el('button', {
@@ -509,6 +512,7 @@
                 const r = await api('child_login', { method: 'POST', body: { firstName: f, lastName: l, familyId: state.family.id } });
                 state.child = r.child;
                 localStorage.setItem(CHILD_KEY, JSON.stringify(r.child));
+                pushSync({ childId: r.child.id });
                 go('kid');
             } catch (err) { toast(err.message, 'error'); }
         };
@@ -541,6 +545,7 @@
     }
 
     function kidLogout() {
+        if (state.child) pushSync({ childId: '' });
         state.child = null; state.kidData = null;
         localStorage.removeItem(CHILD_KEY);
         state.loginTab = 'kid';
@@ -557,6 +562,7 @@
     }
     // Unpair this device from its family entirely (back to onboarding).
     function switchFamily() {
+        pushForgetDevice();
         setFamily(null); setToken(null);
         state.child = null; localStorage.removeItem(CHILD_KEY);
         state.loginTab = 'create';
@@ -600,6 +606,8 @@
             el('button', { class: 'btn btn--good btn--lg', onclick: () => go('kidSummary') },
                 'See my day 🎉')
         ]));
+        const reminders = await kidReminderCard();
+        if (reminders) wrap.appendChild(reminders);
         return wrap;
     }
 
@@ -1559,6 +1567,162 @@
         document.body.appendChild(a); a.click(); a.remove();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
         toast('CSV downloaded.', 'success');
+    }
+
+    // ==================================================================
+    //  PUSH NOTIFICATIONS (web push)
+    // ==================================================================
+    // One browser = one device on the server, keyed by its push endpoint.
+    // Kid reminders follow whichever kid is signed in here; parent alerts are
+    // switched on from the parent area.
+    const pushSupported = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const isStandalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+    let swReady = null;
+    if (pushSupported) {
+        swReady = navigator.serviceWorker.register('sw.js').then(() => navigator.serviceWorker.ready).catch(() => null);
+    }
+
+    async function currentSubscription() {
+        if (!pushSupported || !swReady) return null;
+        const reg = await swReady;
+        return reg ? reg.pushManager.getSubscription() : null;
+    }
+
+    function urlB64ToBytes(b64) {
+        const pad = '='.repeat((4 - b64.length % 4) % 4);
+        const raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+        return Uint8Array.from(raw, c => c.charCodeAt(0));
+    }
+
+    // Ask permission (must run from a tap) and subscribe. Throws a friendly error.
+    async function ensureSubscription() {
+        if (!pushSupported) throw new Error('This browser can’t show notifications.');
+        const perm = await Notification.requestPermission();
+        if (perm !== 'granted') throw new Error('Notifications are blocked. Turn them on for this site in your browser settings, then try again.');
+        const reg = await swReady;
+        if (!reg) throw new Error('Notifications could not start in this browser.');
+        let sub = await reg.pushManager.getSubscription();
+        if (!sub) {
+            const cfg = await api('push_config');
+            if (!cfg.vapidPublicKey) throw new Error('Notifications are not set up on the server yet.');
+            sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToBytes(cfg.vapidPublicKey) });
+        }
+        return sub;
+    }
+
+    async function pushRegister(sub, extra) {
+        if (!sub || !state.family) return null;
+        const j = sub.toJSON();
+        return api('push_register', { method: 'POST', body: Object.assign({
+            platform: 'web', token: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth, familyId: state.family.id
+        }, extra || {}) });
+    }
+
+    // Quietly keep the server in step with who is signed in on this browser.
+    // Only acts when notifications were already allowed here.
+    async function pushSync(extra) {
+        try {
+            if (!pushSupported || Notification.permission !== 'granted') return;
+            const sub = await currentSubscription();
+            if (sub) await pushRegister(sub, extra);
+        } catch (e) { /* never block the app on this */ }
+    }
+
+    async function pushForgetDevice() {
+        try {
+            const sub = await currentSubscription();
+            if (sub) {
+                await api('push_unregister', { method: 'POST', body: { token: sub.endpoint } });
+                await sub.unsubscribe();
+            }
+        } catch (e) { /* ignore */ }
+    }
+
+    async function pushDeviceState() {
+        const sub = await currentSubscription();
+        if (!sub) return { registered: false, childId: null, parentAlerts: false };
+        try { return await api('push_device', { method: 'POST', body: { token: sub.endpoint } }); }
+        catch (e) { return { registered: false, childId: null, parentAlerts: false }; }
+    }
+
+    // How to get notifications on an iPhone/iPad: only from a Home Screen app.
+    function iosInstallHint() {
+        return el('p', { class: 'muted', text: 'On iPhone or iPad, first add Chore Slayer to your Home Screen: tap the Share button, then “Add to Home Screen”. Open it from there and turn on reminders. Or use the Chore Slayer app from the App Store.' });
+    }
+
+    // Kid board card: "Remind me" for this kid on this device.
+    async function kidReminderCard() {
+        if (!state.child) return null;
+        if (!pushSupported) {
+            return isIOS && !isStandalone
+                ? el('div', { class: 'card', style: 'margin-top:20px' }, [el('h3', { text: '🔔 Chore reminders' }), iosInstallHint()])
+                : null;
+        }
+        if (Notification.permission === 'denied') return null;
+        const st = await pushDeviceState();
+        if (st.childId === state.child.id) return null; // already on
+        const btn = el('button', { class: 'btn', type: 'button' }, '🔔 Remind me when it’s time');
+        const card = el('div', { class: 'card', style: 'margin-top:20px' }, [
+            el('h3', { text: 'Chore reminders' }),
+            el('p', { class: 'muted', text: 'Get a reminder on this device when each chore is due.' }),
+            btn
+        ]);
+        btn.addEventListener('click', async () => {
+            try {
+                const sub = await ensureSubscription();
+                await pushRegister(sub, { childId: state.child.id });
+                card.replaceWith(el('p', { class: 'muted', role: 'status', style: 'margin-top:20px; text-align:center', text: '🔔 Reminders are on for ' + state.child.firstName + ' on this device.' }));
+                toast('Reminders are on.', 'success');
+            } catch (err) { toast(err.message, 'error'); }
+        });
+        return card;
+    }
+
+    // Parent area: alerts to this device.
+    async function openNotifications() {
+        const content = el('div', {});
+        let actions = el('div', { class: 'modal__actions' }, [
+            el('button', { class: 'btn', onclick: closeModal }, 'Close')
+        ]);
+        if (!pushSupported) {
+            content.appendChild(el('p', { text: 'This browser can’t show notifications.' }));
+            if (isIOS && !isStandalone) content.appendChild(iosInstallHint());
+            openModal('Notifications', content, actions);
+            return;
+        }
+        const st = await pushDeviceState();
+        const box = el('input', { type: 'checkbox', id: 'n-parent' });
+        box.checked = !!st.parentAlerts && Notification.permission === 'granted';
+        content.appendChild(el('p', { text: 'Get alerts on this device:' }));
+        content.appendChild(el('ul', {}, [
+            el('li', { text: 'when a kid finishes everything on their list for the day' }),
+            el('li', { text: 'once in the evening if chores are still left to do' })
+        ]));
+        content.appendChild(el('div', { class: 'field field--check' }, [box, el('label', { for: 'n-parent', text: ' Send me parent alerts' })]));
+        content.appendChild(el('p', { class: 'muted', text: 'Kids turn on their own chore reminders from their board after they sign in.' }));
+        if (Notification.permission === 'denied') {
+            content.appendChild(el('p', { class: 'field-err', text: 'Notifications are blocked for this site. Allow them in your browser settings first.' }));
+        }
+        actions = el('div', { class: 'modal__actions' }, [
+            el('button', { class: 'btn btn--ghost', onclick: closeModal }, 'Cancel'),
+            el('button', { class: 'btn', onclick: async () => {
+                try {
+                    if (box.checked) {
+                        const sub = await ensureSubscription();
+                        await pushRegister(sub, { parentAlerts: true });
+                        toast('Parent alerts are on for this device.', 'success');
+                    } else {
+                        const sub = await currentSubscription();
+                        if (sub) await pushRegister(sub, { parentAlerts: false });
+                        toast('Parent alerts are off for this device.', 'success');
+                    }
+                    closeModal();
+                } catch (err) { toast(err.message, 'error'); }
+            } }, 'Save')
+        ]);
+        openModal('Notifications', content, actions);
     }
 
     // ---------- Change PIN ----------

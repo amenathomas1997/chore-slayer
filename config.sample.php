@@ -10,4 +10,13 @@ return array (
   'session_days' => 30,
   'timezone' => 'America/Chicago',
   'debug' => false,
+  // Optional push notifications (see lib/push.php). Web push needs nothing here.
+  // 'push' => array (
+  //   'apns_key_path' => '/home/ACCOUNT/keys/AuthKey_XXXXXXXXXX.p8',
+  //   'apns_key_id' => 'XXXXXXXXXX',
+  //   'apns_team_id' => 'XXXXXXXXXX',
+  //   'apns_bundle_id' => 'com.at365.choreslayer',
+  //   'fcm_service_account_path' => '/home/ACCOUNT/keys/firebase-service-account.json',
+  //   'nudge_time' => '19:30',
+  // ),
 );

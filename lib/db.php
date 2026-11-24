@@ -174,6 +174,8 @@ function install_schema(): void
     }
     ensure_index('children', 'uniq_family_name',
         'ALTER TABLE children ADD UNIQUE KEY uniq_family_name (family_id, first_name, last_name)');
+
+    push_install_schema();
 }
 
 /** Add a column only if it does not already exist (portable across MySQL/MariaDB). */

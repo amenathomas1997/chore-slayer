@@ -48,6 +48,7 @@ struct RootView: View {
                             .accessibilityLabel("Kid sign-in: sign the parent out and let a kid sign in")
                         Menu {
                             Button("Family code") { showFamilyCode = true }
+                            Button("Notifications") { model.openNotifications() }
                             Button("Change PIN") { model.openChangePin() }
                             Button("Delete family…", role: .destructive) { model.openDeleteFamily() }
                             Button("Log out") { model.logout() }
@@ -101,6 +102,7 @@ struct RootView: View {
         case .kidSummary: KidSummaryView(model: model)
         case .changePin: ChangePinView(model: model)
         case .deleteFamily: DeleteFamilyView(model: model)
+        case .notifications: NotificationsView(model: model)
         case .role: RoleView(model: model)
         case .kidLogin: KidLoginView(model: model)
         case .kidBoard: BoardView(model: model)

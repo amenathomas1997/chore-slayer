@@ -12,9 +12,9 @@ require __DIR__ . '/lib/helpers.php';
 require __DIR__ . '/lib/db.php';
 require __DIR__ . '/lib/auth.php';
 require __DIR__ . '/lib/admin.php';
+require __DIR__ . '/lib/schedule.php';
+require __DIR__ . '/lib/push.php';
 
-// Generalized time-of-day slots, in the order they occur through the day.
-const SLOTS = ['morning', 'midday', 'afternoon', 'evening', 'anytime'];
 
 // Bumped when the JSON contract changes in a way the apps must react to.
 // Apps can read it from the `status` action to check compatibility.
@@ -90,6 +90,88 @@ switch ($action) {
             json_out(['error' => 'bad_pin', 'message' => 'PIN is incorrect.'], 403);
         }
         delete_family_data($familyId);
+        json_out(['ok' => true]);
+        break;
+
+    // ---- Push notifications ---------------------------------------------
+    // A device is identified by its push token (APNs / FCM token, or the web
+    // push endpoint). Holding the token is what proves a request comes from
+    // that device, so the token is the key for every push_* action.
+    case 'push_config':
+        json_out([
+            'platforms'      => array_values(array_filter(PUSH_PLATFORMS, 'push_configured')),
+            'vapidPublicKey' => push_configured('web') ? (vapid_keys()['public'] ?? null) : null,
+        ]);
+        break;
+
+    case 'push_register':
+        // Body: platform, token, familyId, [p256dh, auth] (web), [sandbox] (iOS),
+        // [childId] ("" stops kid reminders), [parentAlerts] (needs parent sign-in to turn on).
+        need_post($method);
+        $f = require_fields(['platform', 'token', 'familyId']);
+        if (!in_array($f['platform'], PUSH_PLATFORMS, true) || strlen($f['token']) > 1024) {
+            json_out(['error' => 'bad_device', 'message' => 'That device could not be registered.'], 422);
+        }
+        if ($f['platform'] === 'web' && (strpos($f['token'], 'https://') !== 0 || field('p256dh') === '' || field('auth') === '')) {
+            json_out(['error' => 'bad_device', 'message' => 'That browser subscription is incomplete.'], 422);
+        }
+        if (!family_by_id($f['familyId'])) {
+            json_out(['error' => 'not_found', 'message' => 'That family no longer exists.'], 404);
+        }
+        $b = body();
+        $dev = push_device_by_token($f['token']);
+        if ($dev && $dev['family_id'] !== $f['familyId']) {
+            // The device moved to another family: start it clean.
+            db()->prepare('DELETE FROM push_devices WHERE id = ?')->execute([$dev['id']]);
+            $dev = null;
+        }
+        $childId = $dev['child_id'] ?? null;
+        if (array_key_exists('childId', $b)) {
+            $childId = null;
+            if ((string) $b['childId'] !== '') {
+                $c = db()->prepare('SELECT 1 FROM children WHERE id = ? AND family_id = ? AND active = 1');
+                $c->execute([(string) $b['childId'], $f['familyId']]);
+                if (!$c->fetchColumn()) {
+                    json_out(['error' => 'child_not_found', 'message' => 'That child was not found.'], 404);
+                }
+                $childId = (string) $b['childId'];
+            }
+        }
+        $parentAlerts = $dev ? (int) $dev['parent_alerts'] : 0;
+        if (array_key_exists('parentAlerts', $b)) {
+            if (!empty($b['parentAlerts'])) {
+                if (current_family_id() !== $f['familyId']) {
+                    json_out(['error' => 'auth_required', 'message' => 'Parent sign-in required.'], 401);
+                }
+                $parentAlerts = 1;
+            } else {
+                $parentAlerts = 0;
+            }
+        }
+        $sandbox = !empty($b['sandbox']) ? 1 : 0;
+        if ($dev) {
+            db()->prepare('UPDATE push_devices SET p256dh = ?, auth_secret = ?, sandbox = ?, child_id = ?,
+                    parent_alerts = ?, updated_at = ? WHERE id = ?')
+                ->execute([field('p256dh') ?: null, field('auth') ?: null, $sandbox, $childId, $parentAlerts, now_ts(), $dev['id']]);
+        } else {
+            db()->prepare('INSERT INTO push_devices (id, family_id, platform, token, token_hash, p256dh, auth_secret,
+                    sandbox, child_id, parent_alerts, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+                ->execute([new_id(), $f['familyId'], $f['platform'], $f['token'], hash('sha256', $f['token']),
+                    field('p256dh') ?: null, field('auth') ?: null, $sandbox, $childId, $parentAlerts, now_ts(), now_ts()]);
+        }
+        json_out(['ok' => true] + push_device_out(push_device_by_token($f['token'])));
+        break;
+
+    case 'push_device': // what this device currently receives
+        need_post($method);
+        $f = require_fields(['token']);
+        json_out(push_device_out(push_device_by_token($f['token'])));
+        break;
+
+    case 'push_unregister': // stop every notification to this device
+        need_post($method);
+        $f = require_fields(['token']);
+        db()->prepare('DELETE FROM push_devices WHERE token_hash = ?')->execute([hash('sha256', $f['token'])]);
         json_out(['ok' => true]);
         break;
 
@@ -294,6 +376,7 @@ switch ($action) {
         $id = field('id');
         assert_child_in_family($id, $familyId);
         db()->prepare('UPDATE children SET active = 0 WHERE id = ?')->execute([$id]);
+        push_forget_child($id);
         json_out(['ok' => true]);
         break;
 
@@ -307,6 +390,7 @@ switch ($action) {
         $pdo->prepare('DELETE FROM tasks WHERE child_id = ?')->execute([$id]);
         $pdo->prepare('DELETE FROM reports WHERE child_id = ?')->execute([$id]);
         $pdo->prepare('DELETE FROM children WHERE id = ?')->execute([$id]);
+        push_forget_child($id);
         json_out(['ok' => true]);
         break;
 
@@ -655,11 +739,6 @@ function assert_task_in_family(string $taskId, string $familyId): void
     }
 }
 
-function emoji_for(string $type): string
-{
-    return $type === 'activity' ? '⭐' : '✅';
-}
-
 function shape_child(array $r): array
 {
     return [
@@ -709,43 +788,6 @@ function clean_time(string $v): ?string
     return preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $v) ? $v . ':00' : null;
 }
 
-/** Sort rank for a slot (earlier in the day = smaller). */
-function slot_rank(string $slot): int
-{
-    $i = array_search($slot, SLOTS, true);
-    return $i === false ? 99 : $i;
-}
-
-/** Day-of-week index (0=Sun … 6=Sat) for a YYYY-MM-DD date. */
-function dow_index(string $day): int
-{
-    return (int) (new DateTime($day, new DateTimeZone(config()['timezone'] ?? 'UTC')))->format('w');
-}
-
-/** Sort a list of task arrays by slot, then time (nulls last), then title. */
-function sort_by_slot_time(array &$tasks): void
-{
-    usort($tasks, function ($a, $b) {
-        $sa = slot_rank($a['slot'] ?? $a['effectiveSlot'] ?? 'anytime');
-        $sb = slot_rank($b['slot'] ?? $b['effectiveSlot'] ?? 'anytime');
-        if ($sa !== $sb) {
-            return $sa - $sb;
-        }
-        $ta = $a['time'] ?? $a['effectiveTime'] ?? null;
-        $tb = $b['time'] ?? $b['effectiveTime'] ?? null;
-        if ($ta === null && $tb === null) {
-            return strcmp($a['title'], $b['title']);
-        }
-        if ($ta === null) {
-            return 1;
-        }
-        if ($tb === null) {
-            return -1;
-        }
-        return strcmp($ta, $tb);
-    });
-}
-
 function shape_report(?array $r): ?array
 {
     if (!$r) {
@@ -776,119 +818,6 @@ function range_params(): array
         [$from, $to] = [$to, $from];
     }
     return [$from, $to];
-}
-
-/**
- * Tasks + completion state for one child on one day.
- * Only tasks scheduled for that weekday are included; per-day overrides adjust
- * the effective slot/time, and skipped tasks are left out (kid-facing view).
- */
-function day_summary(string $childId, string $day): array
-{
-    $pos = dow_index($day) + 1; // SUBSTRING is 1-based
-    $stmt = db()->prepare(
-        'SELECT t.id, t.title, t.type, t.emoji, t.sort_order, t.time_slot, t.time_of_day,
-                o.time_slot AS o_slot, o.time_of_day AS o_time, o.skipped AS o_skipped,
-                (c.id IS NOT NULL) AS done, c.completed_at
-         FROM tasks t
-         LEFT JOIN task_overrides o ON o.task_id = t.id AND o.day = ?
-         LEFT JOIN completions c ON c.task_id = t.id AND c.day = ?
-         WHERE t.child_id = ? AND t.active = 1 AND t.parent_id IS NULL
-           AND SUBSTRING(t.days_of_week, ?, 1) = 1
-           AND (o.skipped IS NULL OR o.skipped = 0)'
-    );
-    $stmt->execute([$day, $day, $childId, $pos]);
-    $rows = $stmt->fetchAll();
-
-    // Follow-up checks (sub-steps) for the scheduled tasks, with their done state.
-    $mainIds = array_column($rows, 'id');
-    $subsByParent = [];
-    $stepsTotal = 0;
-    $stepsDone = 0;
-    if ($mainIds) {
-        $in = implode(',', array_fill(0, count($mainIds), '?'));
-        $sq = db()->prepare(
-            "SELECT s.id, s.parent_id, s.title, s.emoji, (c.id IS NOT NULL) AS done
-             FROM tasks s LEFT JOIN completions c ON c.task_id = s.id AND c.day = ?
-             WHERE s.parent_id IN ($in) AND s.active = 1
-             ORDER BY s.sort_order, s.title"
-        );
-        $sq->execute(array_merge([$day], $mainIds));
-        foreach ($sq->fetchAll() as $s) {
-            $sDone = (int) $s['done'] === 1;
-            $subsByParent[$s['parent_id']][] = [
-                'id'    => $s['id'],
-                'title' => $s['title'],
-                'emoji' => $s['emoji'] ?? '☑️',
-                'done'  => $sDone,
-            ];
-            $stepsTotal++;
-            if ($sDone) {
-                $stepsDone++;
-            }
-        }
-    }
-
-    $tasks = [];
-    $done = 0;            // fully-complete tasks (main + all follow-ups)
-    $totalUnits = 0;      // every checkbox (main + each follow-up) for granular %
-    $doneUnits = 0;
-    $chores = ['total' => 0, 'done' => 0];
-    $acts   = ['total' => 0, 'done' => 0];
-    foreach ($rows as $r) {
-        $isDone = (int) $r['done'] === 1;
-        $slot = !empty($r['o_slot']) ? $r['o_slot'] : $r['time_slot'];
-        if (!in_array($slot, SLOTS, true)) {
-            $slot = 'anytime';
-        }
-        $time = !empty($r['o_time']) ? $r['o_time'] : $r['time_of_day'];
-        $mySubs = $subsByParent[$r['id']] ?? [];
-        $subCount = count($mySubs);
-        $subDone = 0;
-        foreach ($mySubs as $s) {
-            if (!empty($s['done'])) {
-                $subDone++;
-            }
-        }
-        $complete = $isDone && $subDone === $subCount;
-        $totalUnits += 1 + $subCount;
-        $doneUnits += ($isDone ? 1 : 0) + $subDone;
-        $tasks[] = [
-            'id'          => $r['id'],
-            'title'       => $r['title'],
-            'type'        => $r['type'],
-            'emoji'       => $r['emoji'] ?? emoji_for($r['type']),
-            'slot'        => $slot,
-            'time'        => !empty($time) ? substr($time, 0, 5) : null,
-            'done'        => $isDone,
-            'complete'    => $complete,
-            'completedAt' => $r['completed_at'],
-            'subtasks'    => $mySubs,
-        ];
-        if ($complete) {
-            $done++;
-        }
-        $bucket = $r['type'] === 'activity' ? 'acts' : 'chores';
-        ${$bucket}['total']++;
-        if ($complete) {
-            ${$bucket}['done']++;
-        }
-    }
-    sort_by_slot_time($tasks);
-    $total = count($tasks);
-    return [
-        'childId' => $childId,
-        'day'     => $day,
-        'tasks'   => $tasks,
-        'counts'  => [
-            'total'    => $total,
-            'done'     => $done,
-            'percent'  => $totalUnits ? (int) round($doneUnits * 100 / $totalUnits) : 0,
-            'chores'   => $chores,
-            'activities' => $acts,
-            'steps'    => ['total' => $stepsTotal, 'done' => $stepsDone],
-        ],
-    ];
 }
 
 /**

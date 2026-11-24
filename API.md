@@ -169,6 +169,27 @@ empty override clears it (reverts to the recurring default).
 
 `behaviorRating` is 1–5. A range defaults to the last 7 days when `from`/`to` are omitted.
 
+### Push notifications
+| Action | Method | Auth | Params / Body | Returns |
+|---|---|---|---|---|
+| `push_config` | GET | — | | `{ platforms: ["ios","android","web"…], vapidPublicKey }` |
+| `push_register` | POST | — / 👪 | `{ platform, token, familyId, childId?, parentAlerts?, sandbox?, p256dh?, auth? }` | `{ ok, registered, childId, parentAlerts }` |
+| `push_device` | POST | — | `{ token }` | `{ registered, childId, parentAlerts }` |
+| `push_unregister` | POST | — | `{ token }` | `{ ok }` |
+
+A device (phone, tablet or browser) is keyed by its push `token`: the APNs or FCM
+token, or the Web Push endpoint URL (web also sends the subscription's `p256dh`
+and `auth` keys). `childId` makes the device get that kid's chore reminders (send
+`""` to stop them). Turning `parentAlerts` on needs a parent sign-in for that
+family. iOS debug builds send `sandbox: "1"`. Fields left out keep their stored
+value.
+
+`cron/push-reminders.php` runs every minute (cron, CLI only) and sends: a kid
+reminder when each chore's time arrives (untimed chores use the slot defaults in
+`config.php` → `push.slot_times`; "anytime" chores get none), a parent alert when
+a kid finishes the whole day, and one evening nudge per family at
+`push.nudge_time` listing chores still left. See `lib/push.php` for the config.
+
 ---
 
 ## Data shapes
