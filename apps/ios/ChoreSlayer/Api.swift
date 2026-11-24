@@ -44,6 +44,8 @@ struct Counts: Codable {
     let percent: Int
     let chores: DoneTotal?
     let activities: DoneTotal?
+    /// Follow-up checks only (older servers leave this out).
+    let steps: DoneTotal?
 }
 
 struct DoneTotal: Codable {
@@ -241,13 +243,15 @@ final class Api {
         return try await get("day_summary", query: q)
     }
 
-    /// Toggles a check-off (task or follow-up); returns the new completed state.
+    /// Toggles a check-off (task or follow-up). Unchecking a main task also
+    /// clears that day's follow-up checks (`clearedFollowUps`). Checking a
+    /// follow-up whose main task isn't checked fails with 409 `parent_not_done`.
     @discardableResult
-    func toggleCompletion(childId: String, taskId: String, day: String? = nil) async throws -> Bool {
+    func toggleCompletion(childId: String, taskId: String, day: String? = nil) async throws -> ToggleResult {
         var b = ["childId": childId, "taskId": taskId]
         if let day { b["day"] = day }
         let r: ToggleResp = try await send("toggle_completion", method: "POST", body: b)
-        return r.completed
+        return ToggleResult(completed: r.completed, clearedFollowUps: r.clearedFollowUps ?? 0)
     }
 
     // MARK: parent — children
@@ -277,11 +281,14 @@ final class Api {
         return r.tasks
     }
 
+    /// Returns the new task's id (nil if an older server didn't send it).
+    @discardableResult
     func addTask(childId: String, title: String, type: String, emoji: String,
-                 daysOfWeek: String, timeSlot: String, timeOfDay: String) async throws {
-        _ = try await raw("add_task", method: "POST", body: [
+                 daysOfWeek: String, timeSlot: String, timeOfDay: String) async throws -> String? {
+        let data = try await raw("add_task", method: "POST", body: [
             "childId": childId, "title": title, "type": type, "emoji": emoji,
             "daysOfWeek": daysOfWeek, "timeSlot": timeSlot, "timeOfDay": timeOfDay])
+        return (try? JSONDecoder().decode(IdResp.self, from: data))?.id
     }
 
     func updateTask(id: String, title: String, type: String, emoji: String,
@@ -403,7 +410,9 @@ struct Family: Codable, Equatable {
 struct PushDeviceState: Codable { let registered: Bool; let childId: String?; let parentAlerts: Bool }
 private struct ChildResp: Codable { let child: Child }
 private struct ChildrenResp: Codable { let children: [Child] }
-private struct ToggleResp: Codable { let completed: Bool }
+private struct ToggleResp: Codable { let completed: Bool; let clearedFollowUps: Int? }
+private struct IdResp: Codable { let id: String? }
+struct ToggleResult { let completed: Bool; let clearedFollowUps: Int }
 private struct TasksResp: Codable { let tasks: [ParentTask] }
 private struct ReportResp: Codable { let report: ReportData?; let summary: DaySummary }
 private struct ApiErrorBody: Codable { let error: String?; let message: String? }

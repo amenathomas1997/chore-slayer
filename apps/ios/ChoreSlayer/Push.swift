@@ -141,7 +141,7 @@ struct KidReminderCard: View {
                     Label("Remind me when it's time", systemImage: "bell")
                         .frame(maxWidth: .infinity, minHeight: 44)
                 }
-                .buttonStyle(.borderedProminent)
+                .primaryButton()
                 .disabled(model.busy)
             }
             .padding(14)
@@ -160,7 +160,7 @@ struct NotificationsView: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Notifications")
                 .font(.title2.bold())
-                .accessibilityAddTraits(.isHeader)
+                .screenHeading()
             Text("Get alerts on this device:")
             VStack(alignment: .leading, spacing: 6) {
                 Text("• when a kid finishes everything on their list for the day")
@@ -175,13 +175,13 @@ struct NotificationsView: View {
             if model.pushAllowed == false {
                 Text("Notifications are turned off for Chore Slayer. Turn them on in the Settings app first.")
                     .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.red)
+                    .foregroundStyle(Color.danger)
                 Button("Open Settings") {
                     if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
                 }
             }
             Button("Save") { Task { await model.saveParentAlerts(parentAlerts) } }
-                .buttonStyle(.borderedProminent)
+                .primaryButton()
                 .frame(maxWidth: .infinity, minHeight: 48)
                 .disabled(model.busy)
         }

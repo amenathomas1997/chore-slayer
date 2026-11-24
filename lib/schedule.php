@@ -14,7 +14,8 @@ const SLOTS = ['morning', 'midday', 'afternoon', 'evening', 'anytime'];
 
 function emoji_for(string $type): string
 {
-    return $type === 'activity' ? '⭐' : '✅';
+    // Not ✅: next to a task's checkbox a green tick looks like it is already done.
+    return $type === 'activity' ? '⭐' : '🧹';
 }
 
 /** Sort rank for a slot (earlier in the day = smaller). */

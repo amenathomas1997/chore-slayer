@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import UIKit
 
 enum Screen {
     case connecting, connectDevice, role, kidLogin, kidBoard, kidSummary, changePin, deleteFamily, notifications, parentLogin, parentHome, childHub, childEditor
@@ -8,7 +9,16 @@ enum Screen {
 
 @MainActor
 final class AppModel: ObservableObject {
-    @Published var screen: Screen = .connecting
+    @Published var screen: Screen = .connecting {
+        didSet {
+            guard screen != oldValue else { return }
+            screenChangedAt = Date()
+            markParentActivity()
+        }
+    }
+    /// When `screen` last changed, so status announcements can wait for the
+    /// screen-change announcement instead of colliding with it.
+    private(set) var screenChangedAt = Date.distantPast
     @Published var busy = false
     @Published var error: String?
     /// A non-error status message, e.g. "the parent area locked".
@@ -27,6 +37,15 @@ final class AppModel: ObservableObject {
     @Published var editingChild: Child?    // nil on childEditor ⇒ adding new
     @Published var parentTasks: [ParentTask] = []
     @Published var editingTask: ParentTask?  // nil on taskEditor ⇒ adding new
+    /// The task editor's fields. Kept here (not in the view) so the parent idle
+    /// lock doesn't throw away unsaved edits.
+    @Published var taskDraft = TaskDraft()
+    /// The daily report's fields, kept across the idle lock for the same reason.
+    @Published var reportDraft = ReportDraft()
+    /// Kid board: check-offs being saved. Taps on these are ignored until done.
+    @Published var pendingToggles: Set<String> = []
+    /// Shown one minute before the parent idle lock.
+    @Published var idleWarning = false
     @Published var reportBundle: ReportBundle?
     @Published var bhisReport: BhisReport?
     @Published var daySchedule: DaySchedule?
@@ -45,6 +64,7 @@ final class AppModel: ObservableObject {
         return 10 * 60
     }()
     private var lastParentActivity = Date()
+    private var activityObservers: [NSObjectProtocol] = []
 
     /// nil = not asked yet, false = turned off in Settings, true = allowed.
     @Published var pushAllowed: Bool?
@@ -55,6 +75,26 @@ final class AppModel: ObservableObject {
         family = session.family
         Push.shared.onTokenChange = { [weak self] new, old in
             Task { await self?.reRegister(newToken: new, oldToken: old) }
+        }
+        // Count every kind of input for the parent idle lock, not only touches:
+        // typing (on-screen or hardware keyboard, dictation, Voice Control) and
+        // VoiceOver moving focus. Switch Control focus is not counted, because
+        // auto-scanning moves focus with nobody there; its activations still
+        // count through the actions they trigger.
+        let nc = NotificationCenter.default
+        let names: [Notification.Name] = [
+            UITextField.textDidChangeNotification,
+            UITextView.textDidChangeNotification,
+            UIAccessibility.elementFocusedNotification,
+        ]
+        for name in names {
+            activityObservers.append(nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                if note.name == UIAccessibility.elementFocusedNotification {
+                    let tech = note.userInfo?[UIAccessibility.assistiveTechnologyUserInfoKey] as? UIAccessibility.AssistiveTechnologyIdentifier
+                    guard tech == .notificationVoiceOver else { return }
+                }
+                Task { @MainActor in self?.markParentActivity() }
+            })
         }
     }
 
@@ -135,8 +175,9 @@ final class AppModel: ObservableObject {
         case .childHub: screen = .parentHome
         case .childEditor: screen = managedChild != nil ? .childHub : .parentHome
         case .tasks: screen = .childHub
-        case .taskEditor: screen = .tasks
-        case .dailyReport, .bhis: screen = .childHub
+        case .taskEditor: taskDraft = TaskDraft(); screen = .tasks
+        case .dailyReport: reportDraft = ReportDraft(); screen = .childHub
+        case .bhis: screen = .childHub
         case .adjustDay: screen = .childHub
         case .overrideEditor: screen = .adjustDay
         default: break
@@ -180,17 +221,44 @@ final class AppModel: ObservableObject {
         screen = .kidLogin
     }
 
+    /// Check or uncheck a task or follow-up on the kid board, then say what changed.
     func toggle(_ taskId: String) async {
-        guard let c = child else { return }
+        guard let c = child, !pendingToggles.contains(taskId) else { return }
+        pendingToggles.insert(taskId)
+        defer { pendingToggles.remove(taskId) }
+        error = nil   // so a repeated error is announced again
+        let parentId = board?.tasks.first { t in t.subtasks.contains { $0.id == taskId } }?.id
         do {
-            try await api.toggleCompletion(childId: c.id, taskId: taskId)
+            let r = try await api.toggleCompletion(childId: c.id, taskId: taskId)
             board = try await api.daySummary(childId: c.id)
             error = nil
+            if let msg = toggleMessage(taskId: taskId, parentId: parentId, result: r) {
+                Announcer.say(msg, after: 0.6)
+            }
         } catch let e as ApiError {
             error = e.message
         } catch let e {
             error = e.localizedDescription
         }
+    }
+
+    private func toggleMessage(taskId: String, parentId: String?, result r: ToggleResult) -> String? {
+        if let parentId {
+            // A follow-up check.
+            guard r.completed, let t = board?.tasks.first(where: { $0.id == parentId }) else { return nil }
+            if t.complete { return "\(t.title) all done!" }
+            let left = t.subtasks.filter { !$0.done }.count
+            return left == 1 ? "1 step left." : "\(left) steps left."
+        }
+        guard let t = board?.tasks.first(where: { $0.id == taskId }) else { return nil }
+        if !r.completed {
+            return r.clearedFollowUps > 0 ? "\(t.title) unchecked. Its follow-up checks were cleared." : nil
+        }
+        let left = t.subtasks.filter { !$0.done }
+        if t.subtasks.isEmpty { return "\(t.title) done" }
+        if left.isEmpty { return "\(t.title) all done!" }
+        let n = left.count
+        return "\(t.title) checked. \(n) follow-up check\(n == 1 ? "" : "s") below: \(left.map(\.title).joined(separator: ", "))."
     }
 
     // MARK: parent
@@ -316,19 +384,43 @@ final class AppModel: ObservableObject {
 
     // MARK: parent idle lock
 
-    func markParentActivity() { lastParentActivity = Date() }
+    /// Any parent interaction. Ignored while the "Still there?" warning is up, so
+    /// VoiceOver landing on the warning itself doesn't cancel the lock.
+    func markParentActivity() {
+        guard !idleWarning else { return }
+        lastParentActivity = Date()
+    }
+
+    /// "Stay signed in" on the idle warning.
+    func stayParentSignedIn() {
+        idleWarning = false
+        lastParentActivity = Date()
+        Announcer.say("You're still signed in.", after: 0.4)
+    }
 
     /// Call on a timer and when the app comes back to the foreground.
     func checkParentIdle() {
-        guard isParent, session.token != nil else { return }
-        guard Date().timeIntervalSince(lastParentActivity) >= Self.parentIdleLimit else { return }
-        endParentSession()
-        screen = .kidLogin
-        notice = "The parent area locked after 10 minutes without use. Enter the PIN to go back in."
+        guard isParent, session.token != nil else {
+            if idleWarning { idleWarning = false }
+            return
+        }
+        let idle = Date().timeIntervalSince(lastParentActivity)
+        if idle >= Self.parentIdleLimit {
+            let hadDrafts = taskDraft.childId != nil || reportDraft.childId != nil
+            idleWarning = false
+            endParentSession(keepDrafts: true)
+            screen = .kidLogin
+            notice = "The parent area locked after 10 minutes without use. Enter the PIN to go back in."
+                + (hadDrafts ? " Your unsaved edits are kept." : "")
+        } else if idle >= Self.parentIdleLimit - min(60, Self.parentIdleLimit / 10), !idleWarning {
+            idleWarning = true
+        }
     }
 
     /// Ends the parent sign-in here and on the server; the device stays linked.
-    private func endParentSession() {
+    private func endParentSession(keepDrafts: Bool = false) {
+        if !keepDrafts { taskDraft = TaskDraft(); reportDraft = ReportDraft() }
+        idleWarning = false
         if session.token != nil {
             let api = self.api
             Task { await api.parentLogout() }
@@ -370,8 +462,10 @@ final class AppModel: ObservableObject {
             self.children = try await self.api.children()
             if let existing {
                 self.managedChild = self.children.first { $0.id == existing.id } ?? self.managedChild
+                self.notice = "Changes to \(firstName) saved."
                 self.screen = .childHub
             } else {
+                self.notice = "\(firstName) added."
                 self.screen = .parentHome
             }
         }
@@ -384,6 +478,9 @@ final class AppModel: ObservableObject {
             else { try await self.api.removeChild(id: child.id) }
             self.children = try await self.api.children()
             self.managedChild = nil
+            self.notice = forever
+                ? "\(child.firstName) and all their history were deleted."
+                : "\(child.firstName) removed. Their history is kept."
             self.screen = .parentHome
         }
     }
@@ -398,23 +495,66 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func addTaskStart() { error = nil; editingTask = nil; screen = .taskEditor }
-    func editTaskStart(_ task: ParentTask) { error = nil; editingTask = task; screen = .taskEditor }
+    func addTaskStart() {
+        error = nil
+        editingTask = nil
+        // Keep a draft left behind by the idle lock; otherwise start fresh.
+        if !(taskDraft.taskId == nil && taskDraft.childId == managedChild?.id && taskDraft.childId != nil) {
+            taskDraft = TaskDraft(childId: managedChild?.id)
+        }
+        screen = .taskEditor
+    }
 
-    func saveTask(existing: ParentTask?, title: String, type: String, emoji: String,
-                  daysOfWeek: String, timeSlot: String, timeOfDay: String) async {
+    func editTaskStart(_ task: ParentTask) {
+        error = nil
+        editingTask = task
+        if !(taskDraft.taskId == task.id && taskDraft.childId == task.childId) {
+            taskDraft = TaskDraft(task)
+        }
+        screen = .taskEditor
+    }
+
+    /// "Add" / "Save changes" in the task editor. Saving also saves any
+    /// follow-up renames still waiting in their fields. A new task stays open
+    /// in the editor so follow-up checks can be added straight away.
+    func saveTask() async {
         guard let c = managedChild else { return }
+        let d = taskDraft
+        let title = d.title.trimmingCharacters(in: .whitespaces)
+        let cleanEmoji = d.emoji.trimmingCharacters(in: .whitespaces)
+        let emoji = cleanEmoji.isEmpty ? (d.type == "activity" ? "⭐" : "🧹") : cleanEmoji
+        let time = d.time.trimmingCharacters(in: .whitespaces)
         await run {
-            if let existing {
-                try await self.api.updateTask(id: existing.id, title: title, type: type, emoji: emoji,
-                                              daysOfWeek: daysOfWeek, timeSlot: timeSlot, timeOfDay: timeOfDay)
+            if let id = d.taskId {
+                try await self.api.updateTask(id: id, title: title, type: d.type, emoji: emoji,
+                                              daysOfWeek: d.mask, timeSlot: d.slot, timeOfDay: time)
+                let subs = self.editingTask?.subtasks ?? []
+                for sub in subs {
+                    let t = (d.subTitles[sub.id] ?? sub.title).trimmingCharacters(in: .whitespaces)
+                    if !t.isEmpty && t != sub.title {
+                        try await self.api.updateSubtask(id: sub.id, title: t)
+                    }
+                }
+                self.parentTasks = try await self.api.parentTasks(childId: c.id)
+                self.editingTask = nil
+                self.taskDraft = TaskDraft()
+                self.notice = "\(title) saved."
+                self.screen = .tasks
             } else {
-                try await self.api.addTask(childId: c.id, title: title, type: type, emoji: emoji,
-                                           daysOfWeek: daysOfWeek, timeSlot: timeSlot, timeOfDay: timeOfDay)
+                let id = try await self.api.addTask(childId: c.id, title: title, type: d.type, emoji: emoji,
+                                                    daysOfWeek: d.mask, timeSlot: d.slot, timeOfDay: time)
+                self.parentTasks = try await self.api.parentTasks(childId: c.id)
+                if let id, let t = self.parentTasks.first(where: { $0.id == id }) {
+                    self.editingTask = t
+                    self.taskDraft = TaskDraft(t)
+                    self.notice = "Task added. You can now add follow-up checks."
+                } else {
+                    self.editingTask = nil
+                    self.taskDraft = TaskDraft()
+                    self.notice = "Task added."
+                    self.screen = .tasks
+                }
             }
-            self.parentTasks = try await self.api.parentTasks(childId: c.id)
-            self.editingTask = nil
-            self.screen = .tasks
         }
     }
 
@@ -424,17 +564,26 @@ final class AppModel: ObservableObject {
             try await self.api.removeTask(id: task.id)
             self.parentTasks = try await self.api.parentTasks(childId: c.id)
             self.editingTask = nil
+            self.taskDraft = TaskDraft()
+            self.notice = "\(task.title) deleted."
             self.screen = .tasks
         }
     }
 
-    func addSubtask(parentId: String, title: String) async {
-        guard let c = managedChild, !title.isEmpty else { return }
+    /// Returns true when the follow-up check was added (so the field can be cleared).
+    @discardableResult
+    func addSubtask(parentId: String, title: String) async -> Bool {
+        guard let c = managedChild, !title.isEmpty else { return false }
+        var ok = false
         await run {
             try await self.api.addSubtask(parentId: parentId, title: title, emoji: "☑️")
             self.parentTasks = try await self.api.parentTasks(childId: c.id)
             self.editingTask = self.parentTasks.first { $0.id == parentId } ?? self.editingTask
+            self.taskDraft.newSub = ""
+            self.notice = "Follow-up check \(title) added."
+            ok = true
         }
+        return ok
     }
 
     func renameSubtask(subId: String, title: String) async {
@@ -444,17 +593,27 @@ final class AppModel: ObservableObject {
             try await self.api.updateSubtask(id: subId, title: title)
             self.parentTasks = try await self.api.parentTasks(childId: c.id)
             self.editingTask = self.parentTasks.first { $0.id == keepId } ?? self.editingTask
+            self.taskDraft.subTitles[subId] = nil
+            self.notice = "Follow-up check renamed to \(title)."
         }
     }
 
-    func removeSubtask(subId: String) async {
-        guard let c = managedChild else { return }
+    /// Returns true when the follow-up check was removed.
+    @discardableResult
+    func removeSubtask(subId: String) async -> Bool {
+        guard let c = managedChild else { return false }
         let keepId = editingTask?.id
+        let name = editingTask?.subtasks.first { $0.id == subId }?.title ?? "check"
+        var ok = false
         await run {
             try await self.api.removeTask(id: subId) // remove_task also deactivates a follow-up
             self.parentTasks = try await self.api.parentTasks(childId: c.id)
             self.editingTask = self.parentTasks.first { $0.id == keepId } ?? self.editingTask
+            self.taskDraft.subTitles[subId] = nil
+            self.notice = "Follow-up check \(name) removed."
+            ok = true
         }
+        return ok
     }
 
     // MARK: parent — daily report
@@ -462,19 +621,27 @@ final class AppModel: ObservableObject {
     func openReport() async {
         guard let c = managedChild else { return }
         await run {
-            self.reportBundle = try await self.api.getReport(childId: c.id)
+            let b = try await self.api.getReport(childId: c.id)
+            self.reportBundle = b
+            // Keep a draft left behind by the idle lock for this child and day.
+            if !(self.reportDraft.childId == c.id && self.reportDraft.day == b.day) {
+                self.reportDraft = ReportDraft(childId: c.id, bundle: b)
+            }
             self.screen = .dailyReport
         }
     }
 
-    func saveReport(mood: String, rating: Int?, highlights: String,
-                    challenges: String, notes: String, goals: String) async {
+    func saveReport() async {
         guard let c = managedChild else { return }
         let day = reportBundle?.day
+        let d = reportDraft
+        func clean(_ v: String) -> String { v.trimmingCharacters(in: .whitespaces) }
         await run {
-            try await self.api.saveReport(childId: c.id, day: day, mood: mood, behaviorRating: rating,
-                                          highlights: highlights, challenges: challenges, notes: notes, goals: goals)
+            try await self.api.saveReport(childId: c.id, day: day, mood: clean(d.mood), behaviorRating: d.rating,
+                                          highlights: clean(d.highlights), challenges: clean(d.challenges),
+                                          notes: clean(d.notes), goals: clean(d.goals))
             self.reportBundle = try await self.api.getReport(childId: c.id, day: day)
+            self.notice = "Report saved."
         }
     }
 
@@ -511,7 +678,9 @@ final class AppModel: ObservableObject {
         await run {
             try await self.api.setOverride(taskId: taskId, day: day, timeSlot: timeSlot, timeOfDay: timeOfDay, skipped: skipped)
             self.daySchedule = try await self.api.daySchedule(childId: c.id, day: day)
+            let name = self.editingOverride?.title ?? "Task"
             self.editingOverride = nil
+            self.notice = skipped ? "\(name) skipped on \(day)." : "\(name) changed for \(day)."
             self.screen = .adjustDay
         }
     }
@@ -522,7 +691,9 @@ final class AppModel: ObservableObject {
         await run {
             try await self.api.setOverride(taskId: taskId, day: day, timeSlot: "", timeOfDay: "", skipped: false)
             self.daySchedule = try await self.api.daySchedule(childId: c.id, day: day)
+            let name = self.editingOverride?.title ?? "Task"
             self.editingOverride = nil
+            self.notice = "\(name) is back to its recurring schedule on \(day)."
             self.screen = .adjustDay
         }
     }
@@ -530,7 +701,9 @@ final class AppModel: ObservableObject {
     func generateBhis(from: String, to: String) async {
         guard let c = managedChild else { return }
         await run {
-            self.bhisReport = try await self.api.bhis(childId: c.id, from: from, to: to)
+            let r = try await self.api.bhis(childId: c.id, from: from, to: to)
+            self.bhisReport = r
+            self.notice = "BHIS report ready: \(r.range.from) to \(r.range.to)."
         }
     }
 
@@ -556,5 +729,53 @@ final class AppModel: ObservableObject {
             error = e.localizedDescription
         }
         busy = false
+    }
+}
+
+// MARK: - Editor drafts
+
+struct TaskDraft: Equatable {
+    var taskId: String?          // nil ⇒ a new task
+    var childId: String?         // nil ⇒ no draft
+    var title = ""
+    var type = "chore"
+    var emoji = "🧹"
+    var mask = "1111111"
+    var slot = "anytime"
+    var time = ""
+    var newSub = ""
+    /// Follow-up renames typed but not saved yet, by follow-up id.
+    var subTitles: [String: String] = [:]
+
+    init(childId: String? = nil) { self.childId = childId }
+
+    init(_ t: ParentTask) {
+        taskId = t.id; childId = t.childId
+        title = t.title; type = t.type; emoji = t.emoji
+        mask = t.daysOfWeek; slot = t.timeSlot; time = t.timeOfDay ?? ""
+    }
+}
+
+struct ReportDraft: Equatable {
+    var childId: String?         // nil ⇒ no draft
+    var day = ""
+    var mood = ""
+    var rating: Int?
+    var highlights = ""
+    var challenges = ""
+    var notes = ""
+    var goals = ""
+
+    init() {}
+
+    init(childId: String, bundle b: ReportBundle) {
+        self.childId = childId
+        day = b.day
+        mood = b.report?.mood ?? ""
+        rating = b.report?.behaviorRating
+        highlights = b.report?.highlights ?? ""
+        challenges = b.report?.challenges ?? ""
+        notes = b.report?.notes ?? ""
+        goals = b.report?.goals ?? ""
     }
 }

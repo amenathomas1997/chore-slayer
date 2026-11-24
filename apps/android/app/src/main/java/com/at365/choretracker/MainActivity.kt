@@ -1,6 +1,11 @@
 package com.at365.choretracker
 
+import android.graphics.Color as AndroidColor
 import android.os.Bundle
+import android.view.View
+import android.view.ViewGroup
+import android.view.accessibility.AccessibilityEvent
+import androidx.activity.SystemBarStyle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -25,11 +30,14 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -37,7 +45,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
@@ -48,12 +58,61 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        // The app is light-only: keep dark status/nav bar icons even when the phone is in dark mode.
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.light(AndroidColor.TRANSPARENT, AndroidColor.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.light(AndroidColor.TRANSPARENT, AndroidColor.TRANSPARENT),
+        )
         // Debug builds only: `adb shell am start -n com.at365.choreslayer/com.at365.choretracker.MainActivity -e apiBase <url>`
         if (BuildConfig.DEBUG) intent?.getStringExtra("apiBase")?.let { model.session.debugBase = it }
         Push.createChannel(this)
-        setContent { ChoreTheme { Root(model) } }
+        // The parent idle lock must count TalkBack, Switch Access and Voice Access actions too.
+        // Those don't always reach onUserInteraction or pointerInput, but they do send these events.
+        window.decorView.accessibilityDelegate = object : View.AccessibilityDelegate() {
+            override fun onRequestSendAccessibilityEvent(host: ViewGroup, child: View, event: AccessibilityEvent): Boolean {
+                when (event.eventType) {
+                    AccessibilityEvent.TYPE_VIEW_CLICKED, AccessibilityEvent.TYPE_VIEW_LONG_CLICKED,
+                    AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED, AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED,
+                    AccessibilityEvent.TYPE_VIEW_SCROLLED -> model.markParentActivity()
+                }
+                return super.onRequestSendAccessibilityEvent(host, child, event)
+            }
+        }
+        setContent {
+            CompositionLocalProvider(LocalUserActivity provides model::markParentActivity) {
+                ChoreTheme { Root(model) }
+            }
+        }
     }
+
+    /** Touches, hardware keys and trackball: all count as parent activity for the idle lock. */
+    override fun onUserInteraction() {
+        super.onUserInteraction()
+        model.markParentActivity()
+    }
+}
+
+/** The name of each screen: shown in the top bar and announced by TalkBack when the screen changes. */
+fun screenTitle(m: AppModel): String = when (m.screen) {
+    Screen.Connecting -> "Chore Slayer"
+    Screen.ConnectDevice -> "Welcome to Chore Slayer"
+    Screen.Role -> "Who's using the app?"
+    Screen.KidLogin -> "Kid sign-in"
+    Screen.KidBoard -> m.child?.let { "${it.firstName}'s chores" } ?: "My chores"
+    Screen.KidSummary -> m.child?.let { "${it.firstName}'s day" } ?: "My day"
+    Screen.ChangePin -> "Change PIN"
+    Screen.DeleteFamily -> "Delete family"
+    Screen.Notifications -> "Notifications"
+    Screen.ParentLogin -> "Parent sign-in"
+    Screen.ParentHome -> "Children"
+    Screen.ChildHub -> m.managedChild?.let { "${it.firstName} ${it.lastName}" } ?: "Child"
+    Screen.ChildEditor -> if (m.editingChild == null) "Add a child" else "Edit child"
+    Screen.Tasks -> "Tasks & activities"
+    Screen.TaskEditor -> if (m.editingTask == null) "Add task or activity" else "Edit task"
+    Screen.DailyReport -> "Daily report"
+    Screen.Bhis -> "BHIS report"
+    Screen.AdjustDay -> "Adjust a day"
+    Screen.OverrideEditor -> "Adjust for one day"
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -64,7 +123,7 @@ fun Root(m: AppModel) {
 
     LaunchedEffect(Unit) { if (m.statusInfo == null) m.connect() }
     // The 10-minute parent lock: check every 30 s and whenever the app comes back.
-    LaunchedEffect(Unit) { while (true) { delay(30_000); m.checkParentIdle() } }
+    LaunchedEffect(Unit) { while (true) { delay(5_000); m.checkParentIdle() } }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { m.checkParentIdle(); m.refreshPushAllowed() }
 
     val canGoBack = when (m.screen) {
@@ -76,7 +135,7 @@ fun Root(m: AppModel) {
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
-                title = { Text("Chore Slayer") },
+                title = { Text("Chore Slayer", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 navigationIcon = {
                     if (canGoBack) IconButton(onClick = { m.back() }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -109,13 +168,20 @@ fun Root(m: AppModel) {
             .pointerInput(Unit) {
                 awaitPointerEventScope { while (true) { awaitPointerEvent(); m.markParentActivity() } }
             }) {
-            Column(
-                Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                m.error?.let { Banner(it, true) { m.error = null } }
-                m.notice?.let { Banner(it, false) { m.notice = null } }
-                if (m.busy) LinearProgressIndicator(Modifier.fillMaxWidth().semantics { contentDescription = "Loading" })
+            Column(Modifier.fillMaxSize()) {
+                // Always composed, outside the scrolling content: errors and notices stay on screen
+                // and are announced (live regions) wherever the button that caused them is.
+                StatusArea(m)
+                if (m.busy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 16.dp).semantics { contentDescription = "Loading" })
+                // A fresh scroll position per screen, and a pane title so TalkBack announces the new screen.
+                key(m.screen) {
+                    val scroll = rememberScrollState()
+                    val title = screenTitle(m)
+                    Column(
+                        Modifier.fillMaxWidth().verticalScroll(scroll).padding(16.dp)
+                            .semantics { paneTitle = title },
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
                 when (m.screen) {
                     Screen.Connecting -> ConnectingScreen(m)
                     Screen.ConnectDevice -> ConnectDeviceScreen(m)
@@ -137,8 +203,19 @@ fun Root(m: AppModel) {
                     Screen.AdjustDay -> AdjustDayScreen(m)
                     Screen.OverrideEditor -> OverrideEditorScreen(m)
                 }
+                    }
+                }
             }
         }
+    }
+
+    if (m.idleWarning) {
+        AlertDialog(
+            onDismissRequest = { m.stayParentSignedIn() },
+            title = { Text("Still there?") },
+            text = { Text("The parent area locks in 60 seconds.") },
+            confirmButton = { TextButton(onClick = { m.stayParentSignedIn() }) { Text("Stay signed in") } },
+        )
     }
 
     if (showCode) FamilyCodeDialog(m.family?.code ?: "—") { showCode = false }

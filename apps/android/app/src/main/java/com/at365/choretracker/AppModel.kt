@@ -49,8 +49,22 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     var pushAllowed by mutableStateOf<Boolean?>(null); private set
     var kidRemindersOn by mutableStateOf(false); private set
 
+    /** Kid board: what the last check-off did, for a visible + spoken (polite live region) status line. */
+    var kidStatus by mutableStateOf(""); private set
+    /** A check-off is being saved; further taps are ignored until it finishes (double-tap guard). */
+    private var togglingId: String? = null
+
+    /** Task editor: put keyboard focus in the "Add a follow-up check" field (after a new task is added). */
+    var focusAddFollowUp by mutableStateOf(false)
+
+    /** Unsaved daily-report text, kept in memory so the idle lock doesn't lose it. */
+    var reportDraft: ReportDraft? = null
+
     private var lastParentActivity = System.currentTimeMillis()
     val parentIdleLimitMs = 10 * 60 * 1000L
+    val parentIdleWarnMs = 9 * 60 * 1000L
+    /** Show the "Still there?" warning one minute before the parent lock. */
+    var idleWarning by mutableStateOf(false); private set
 
     init {
         Push.onTokenChange = { new, old -> viewModelScope.launch { reRegister(new, old) } }
@@ -109,7 +123,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     /** Back from the current screen; returns false when there is nowhere to go. */
     fun back(): Boolean {
-        error = null
+        error = null; notice = null
         screen = when (screen) {
             Screen.KidLogin, Screen.ParentLogin -> Screen.Role
             Screen.KidBoard -> if (isParent) Screen.ChildHub else Screen.KidLogin
@@ -133,7 +147,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         if (session.token != null) endParentSession()
         act {
             val c = api.childLogin(first, last, fam.id)
-            child = c; board = api.daySummary(c.id); screen = Screen.KidBoard
+            child = c; kidStatus = ""; board = api.daySummary(c.id); screen = Screen.KidBoard
         }
         syncKidReminders()
     }
@@ -156,10 +170,39 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     fun toggle(taskId: String) = launch {
         val c = child ?: return@launch
+        if (togglingId != null) return@launch   // a save is in flight: ignore the double tap
+        togglingId = taskId
+        val before = board
         try {
-            api.toggleCompletion(c.id, taskId)
-            board = api.daySummary(c.id); error = null
-        } catch (e: ApiError) { error = e.message }
+            val (completed, cleared) = api.toggleCompletion(c.id, taskId)
+            val after = api.daySummary(c.id)
+            board = after; error = null
+            kidStatus = toggleMessage(before, after, taskId, completed, cleared)
+        } catch (e: ApiError) {
+            error = e.message
+            // e.g. 409 parent_not_done: the board was out of date, so refresh it.
+            runCatching { board = api.daySummary(c.id) }
+        } finally {
+            togglingId = null
+        }
+    }
+
+    private fun steps(n: Int) = if (n == 1) "1 more step" else "$n more steps"
+
+    /** What to tell the kid after a check-off, based on the board before and after. */
+    private fun toggleMessage(before: DaySummary?, after: DaySummary, taskId: String, completed: Boolean, cleared: Int): String {
+        after.tasks.firstOrNull { it.id == taskId }?.let { t ->
+            if (!completed) return if (cleared > 0) "${t.title} unchecked. Its follow-up checks were cleared." else "${t.title} unchecked."
+            val left = t.subtasks.count { !it.done }
+            return if (left > 0) "${t.title} checked. ${steps(left)} below." else "${t.title} done"
+        }
+        val parent = after.tasks.firstOrNull { p -> p.subtasks.any { it.id == taskId } } ?: return ""
+        val sub = parent.subtasks.first { it.id == taskId }
+        val wasComplete = before?.tasks?.firstOrNull { it.id == parent.id }?.complete == true
+        if (completed && parent.complete && !wasComplete) return "${parent.title}: all done!"
+        if (!completed) return "${sub.title} unchecked."
+        val left = parent.subtasks.count { !it.done }
+        return "${sub.title} done. ${steps(left)} for ${parent.title}."
     }
 
     // ---- parent ----
@@ -193,17 +236,26 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     fun handToKid() { endParentSession(); screen = Screen.KidLogin }
 
+    /** Any touch, key, typing, or screen-reader / switch / voice action counts as parent activity. */
     fun markParentActivity() { lastParentActivity = System.currentTimeMillis() }
 
+    /** "Stay signed in" on the idle warning. */
+    fun stayParentSignedIn() { markParentActivity(); idleWarning = false }
+
     fun checkParentIdle() {
-        if (!isParent || session.token == null) return
-        if (System.currentTimeMillis() - lastParentActivity < parentIdleLimitMs) return
-        endParentSession()
+        if (!isParent || session.token == null) { idleWarning = false; return }
+        val idle = System.currentTimeMillis() - lastParentActivity
+        idleWarning = idle in parentIdleWarnMs until parentIdleLimitMs
+        if (idle < parentIdleLimitMs) return
+        endParentSession(keepDrafts = true)
         screen = Screen.KidLogin
-        notice = "The parent area locked after 10 minutes without use. Enter the PIN to go back in."
+        notice = "The parent area locked after 10 minutes without use. Enter the PIN to go back in." +
+            if (reportDraft != null) " Your unsaved report notes are kept." else ""
     }
 
-    private fun endParentSession() {
+    private fun endParentSession(keepDrafts: Boolean = false) {
+        idleWarning = false
+        if (!keepDrafts) reportDraft = null
         if (session.token != null) launch { api.parentLogout() }
         session.token = null
         isParent = false
@@ -217,7 +269,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     fun openChildHub(c: Child) { managedChild = c; error = null; screen = Screen.ChildHub }
 
     fun openBoard(c: Child) = launch {
-        act { child = c; board = api.daySummary(c.id); screen = Screen.KidBoard }
+        act { child = c; kidStatus = ""; board = api.daySummary(c.id); screen = Screen.KidBoard }
         syncKidReminders()
     }
 
@@ -232,7 +284,11 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             if (existing != null) {
                 managedChild = children.firstOrNull { it.id == existing.id } ?: managedChild
                 screen = Screen.ChildHub
-            } else screen = Screen.ParentHome
+                notice = "Changes to $firstName saved."
+            } else {
+                screen = Screen.ParentHome
+                notice = "$firstName added."
+            }
         }
     }
 
@@ -241,6 +297,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         act {
             if (forever) api.deleteChildForever(c.id) else api.removeChild(c.id)
             children = api.children(); managedChild = null; screen = Screen.ParentHome
+            notice = if (forever) "${c.firstName} was deleted forever." else "${c.firstName} was removed. Their history is kept."
         }
     }
 
@@ -254,57 +311,100 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     fun addTaskStart() { error = null; editingTask = null; screen = Screen.TaskEditor }
     fun editTaskStart(t: ParentTask) { error = null; editingTask = t; screen = Screen.TaskEditor }
 
+    /**
+     * Existing task: saves pending follow-up renames ([renames] = subId to new title) and the main
+     * fields, then returns to the list. New task: adds it and stays in the editor (now editing the
+     * new task) so follow-up checks can be added straight away.
+     */
     fun saveTask(existing: ParentTask?, title: String, type: String, emoji: String,
-                 daysOfWeek: String, timeSlot: String, timeOfDay: String) = launch {
+                 daysOfWeek: String, timeSlot: String, timeOfDay: String,
+                 renames: Map<String, String> = emptyMap(), onSaved: () -> Unit = {}) = launch {
         val c = managedChild ?: return@launch
         act {
-            if (existing != null) api.updateTask(existing.id, title, type, emoji, daysOfWeek, timeSlot, timeOfDay)
-            else api.addTask(c.id, title, type, emoji, daysOfWeek, timeSlot, timeOfDay)
-            parentTasks = api.parentTasks(c.id); editingTask = null; screen = Screen.Tasks
+            if (existing != null) {
+                renames.forEach { (id, t) -> if (t.isNotBlank()) api.updateSubtask(id, t) }
+                api.updateTask(existing.id, title, type, emoji, daysOfWeek, timeSlot, timeOfDay)
+                parentTasks = api.parentTasks(c.id); editingTask = null; screen = Screen.Tasks
+                notice = "$title saved."
+            } else {
+                val id = api.addTask(c.id, title, type, emoji, daysOfWeek, timeSlot, timeOfDay)
+                parentTasks = api.parentTasks(c.id)
+                val added = parentTasks.firstOrNull { it.id == id }
+                    ?: parentTasks.lastOrNull { it.title == title }
+                if (added != null) {
+                    editingTask = added
+                    focusAddFollowUp = true
+                    notice = "Task added. You can now add follow-up checks."
+                } else {
+                    editingTask = null; screen = Screen.Tasks
+                    notice = "Task added."
+                }
+            }
+            onSaved()
         }
     }
 
     fun deleteTask(t: ParentTask) = launch {
         val c = managedChild ?: return@launch
-        act { api.removeTask(t.id); parentTasks = api.parentTasks(c.id); editingTask = null; screen = Screen.Tasks }
+        act {
+            api.removeTask(t.id); parentTasks = api.parentTasks(c.id); editingTask = null; screen = Screen.Tasks
+            notice = "${t.title} deleted."
+        }
     }
 
-    fun addSubtask(parentId: String, title: String) = launch {
+    /** [onResult] gets true only when the follow-up was saved (so the field keeps the text on failure). */
+    fun addSubtask(parentId: String, title: String, onResult: (Boolean) -> Unit = {}) = launch {
         val c = managedChild ?: return@launch
         if (title.isBlank()) return@launch
+        var ok = false
         act {
             api.addSubtask(parentId, title, "☑️")
+            ok = true
+            notice = "Follow-up added: $title."
             parentTasks = api.parentTasks(c.id)
             editingTask = parentTasks.firstOrNull { it.id == parentId } ?: editingTask
         }
+        onResult(ok)
     }
 
-    fun renameSubtask(subId: String, title: String) = launch {
+    fun renameSubtask(subId: String, title: String, onResult: (Boolean) -> Unit = {}) = launch {
         val c = managedChild ?: return@launch
         if (title.isBlank()) return@launch
         val keep = editingTask?.id
+        var ok = false
         act {
             api.updateSubtask(subId, title)
+            ok = true
+            notice = "Follow-up renamed to $title."
             parentTasks = api.parentTasks(c.id)
             editingTask = parentTasks.firstOrNull { it.id == keep } ?: editingTask
         }
+        onResult(ok)
     }
 
-    fun removeSubtask(subId: String) = launch {
+    fun removeSubtask(subId: String, title: String, onResult: (Boolean) -> Unit = {}) = launch {
         val c = managedChild ?: return@launch
         val keep = editingTask?.id
+        var ok = false
         act {
             api.removeTask(subId)
+            ok = true
+            notice = "Removed follow-up: $title."
             parentTasks = api.parentTasks(c.id)
             editingTask = parentTasks.firstOrNull { it.id == keep } ?: editingTask
         }
+        onResult(ok)
     }
 
     // ---- parent: reports ----
 
     fun openReport() = launch {
         val c = managedChild ?: return@launch
-        act { reportBundle = api.getReport(c.id); screen = Screen.DailyReport }
+        act {
+            val b = api.getReport(c.id)
+            reportBundle = b; screen = Screen.DailyReport
+            if (reportDraft?.let { it.childId == c.id && it.day == b.day } == true) notice = "Your unsaved report notes were kept."
+        }
     }
 
     fun saveReport(mood: String, rating: Int?, highlights: String, challenges: String, notes: String, goals: String) = launch {
@@ -313,6 +413,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         act {
             api.saveReport(c.id, day, mood, rating, highlights, challenges, notes, goals)
             reportBundle = api.getReport(c.id, day)
+            reportDraft = null
             notice = "Report saved."
         }
     }
@@ -321,7 +422,11 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     fun generateBhis(from: String, to: String) = launch {
         val c = managedChild ?: return@launch
-        act { bhisReport = api.bhis(c.id, from, to) }
+        act {
+            val r = api.bhis(c.id, from, to)
+            bhisReport = r
+            notice = "BHIS report ready for ${r.from} to ${r.to}."
+        }
     }
 
     // ---- parent: per-day overrides ----
@@ -341,16 +446,22 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     fun editOverrideStart(t: DayTaskSchedule) { error = null; editingOverride = t; screen = Screen.OverrideEditor }
 
-    fun saveOverride(taskId: String, timeSlot: String, timeOfDay: String, skipped: Boolean) = launch {
+    fun saveOverride(taskId: String, timeSlot: String, timeOfDay: String, skipped: Boolean, reset: Boolean = false) = launch {
         val c = managedChild ?: return@launch
         val day = overrideDay
+        val title = editingOverride?.title ?: "Task"
         act {
             api.setOverride(taskId, day, timeSlot, timeOfDay, skipped)
             daySchedule = api.daySchedule(c.id, day); editingOverride = null; screen = Screen.AdjustDay
+            notice = when {
+                reset -> "$title is back to its usual schedule for $day."
+                skipped -> "$title is skipped on $day. Its follow-up checks are skipped too."
+                else -> "$title changed for $day."
+            }
         }
     }
 
-    fun clearOverride(taskId: String) = saveOverride(taskId, "", "", false)
+    fun clearOverride(taskId: String) = saveOverride(taskId, "", "", false, reset = true)
 
     // ---- push notifications ----
 
@@ -421,3 +532,9 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         }
     }
 }
+
+/** A daily report being written but not yet saved. */
+data class ReportDraft(
+    val childId: String, val day: String, val mood: String, val rating: Int?,
+    val highlights: String, val challenges: String, val notes: String, val goals: String,
+)

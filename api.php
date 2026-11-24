@@ -516,16 +516,35 @@ switch ($action) {
         require_child($f['childId']);
         $day = clean_date(field('day', ''), today());
         // Confirm task belongs to child and is active.
-        $t = db()->prepare('SELECT id FROM tasks WHERE id = ? AND child_id = ? AND active = 1');
+        $t = db()->prepare('SELECT id, parent_id FROM tasks WHERE id = ? AND child_id = ? AND active = 1');
         $t->execute([$f['taskId'], $f['childId']]);
-        if (!$t->fetchColumn()) {
+        $taskRow = $t->fetch(PDO::FETCH_ASSOC);
+        if (!$taskRow) {
             json_out(['error' => 'bad_task', 'message' => 'That task is not available.'], 404);
         }
         $existing = db()->prepare('SELECT id FROM completions WHERE task_id = ? AND day = ?');
         $existing->execute([$f['taskId'], $day]);
         if ($existing->fetchColumn()) {
             db()->prepare('DELETE FROM completions WHERE task_id = ? AND day = ?')->execute([$f['taskId'], $day]);
-            json_out(['ok' => true, 'completed' => false, 'day' => $day]);
+            // Unchecking a main task also clears that day's follow-up checks, so the
+            // board, the progress numbers and "See my day" always agree.
+            $cleared = 0;
+            if (empty($taskRow['parent_id'])) {
+                $del = db()->prepare(
+                    'DELETE FROM completions WHERE day = ? AND task_id IN (SELECT id FROM tasks WHERE parent_id = ?)'
+                );
+                $del->execute([$day, $f['taskId']]);
+                $cleared = $del->rowCount();
+            }
+            json_out(['ok' => true, 'completed' => false, 'day' => $day, 'clearedFollowUps' => $cleared]);
+        }
+        // A follow-up can only be checked once its main task is checked.
+        if (!empty($taskRow['parent_id'])) {
+            $p = db()->prepare('SELECT id FROM completions WHERE task_id = ? AND day = ?');
+            $p->execute([$taskRow['parent_id'], $day]);
+            if (!$p->fetchColumn()) {
+                json_out(['error' => 'parent_not_done', 'message' => 'Check the main task first.'], 409);
+            }
         }
         db()->prepare(
             'INSERT INTO completions (id, child_id, task_id, day, completed_at) VALUES (?, ?, ?, ?, ?)'
@@ -830,7 +849,8 @@ function day_schedule(string $childId, string $day): array
     $pos = dow_index($day) + 1;
     $stmt = db()->prepare(
         'SELECT t.id, t.title, t.type, t.emoji, t.sort_order, t.time_slot, t.time_of_day,
-                o.time_slot AS o_slot, o.time_of_day AS o_time, o.skipped AS o_skipped
+                o.time_slot AS o_slot, o.time_of_day AS o_time, o.skipped AS o_skipped,
+                (SELECT COUNT(*) FROM tasks s WHERE s.parent_id = t.id AND s.active = 1) AS sub_count
          FROM tasks t
          LEFT JOIN task_overrides o ON o.task_id = t.id AND o.day = ?
          WHERE t.child_id = ? AND t.active = 1 AND t.parent_id IS NULL
@@ -857,6 +877,7 @@ function day_schedule(string $childId, string $day): array
             'skipped'       => (int) $r['o_skipped'] === 1,
             'effectiveSlot' => $effSlot,
             'effectiveTime' => !empty($effTime) ? substr($effTime, 0, 5) : null,
+            'subtaskCount'  => (int) $r['sub_count'],
         ];
     }
     sort_by_slot_time($out);

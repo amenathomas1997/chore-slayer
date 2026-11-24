@@ -22,7 +22,7 @@ struct ChildEditorView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(existing == nil ? "Add a child" : "Edit child")
-                .font(.title2.bold()).accessibilityAddTraits(.isHeader)
+                .font(.title2.bold()).screenHeading()
 
             TextField("First name", text: $first).textFieldStyle(.roundedBorder)
             TextField("Last name", text: $last).textFieldStyle(.roundedBorder)
@@ -35,6 +35,8 @@ struct ChildEditorView: View {
                             .frame(width: 48, height: 48)
                             .background(emoji == e ? Color.brand.opacity(0.25) : Color(.secondarySystemBackground))
                             .clipShape(RoundedRectangle(cornerRadius: 10))
+                            .overlay(RoundedRectangle(cornerRadius: 10)
+                                .strokeBorder(emoji == e ? Color.brand : Color.clear, lineWidth: 3))
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Icon \(e)")
@@ -50,8 +52,18 @@ struct ChildEditorView: View {
                         Circle().fill(Color(hex: hex))
                             .frame(width: 44, height: 44)
                             .overlay(
-                                Circle().stroke(color == hex ? Color.black : Color.black.opacity(0.2),
+                                Circle().stroke(color == hex ? Color.primary : Color.primary.opacity(0.3),
                                                 lineWidth: color == hex ? 3 : 1))
+                            .overlay {
+                                if color == hex {
+                                    Image(systemName: "checkmark")
+                                        .font(.body.weight(.heavy))
+                                        .foregroundStyle(.white)
+                                        .shadow(color: .black.opacity(0.8), radius: 1)
+                                        .accessibilityHidden(true)
+                                }
+                            }
+                            .padding(3)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(colorName(hex))
@@ -69,7 +81,7 @@ struct ChildEditorView: View {
                         color: color, emoji: emoji)
                 }
             }
-            .buttonStyle(.borderedProminent)
+            .primaryButton()
             .frame(maxWidth: .infinity, minHeight: 48)
             .disabled(!canSave)
 

@@ -30,6 +30,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -124,18 +125,23 @@ fun LinkButton(text: String, color: Color = Palette.brand, onClick: () -> Unit) 
     TextButton(onClick = onClick, modifier = Modifier.heightIn(min = 48.dp)) { Text(text, color = color) }
 }
 
+/** Called on typing in any field, so on-screen-keyboard typing counts as parent activity for the idle lock. */
+val LocalUserActivity = staticCompositionLocalOf<() -> Unit> { {} }
+
 @Composable
 fun Field(value: String, onChange: (String) -> Unit, label: String, singleLine: Boolean = true,
           keyboard: KeyboardOptions = KeyboardOptions.Default) {
-    OutlinedTextField(value = value, onValueChange = onChange, label = { Text(label) }, singleLine = singleLine,
+    val active = LocalUserActivity.current
+    OutlinedTextField(value = value, onValueChange = { active(); onChange(it) }, label = { Text(label) }, singleLine = singleLine,
         keyboardOptions = keyboard, modifier = Modifier.fillMaxWidth())
 }
 
 /** A numeric, hidden PIN field limited to 8 digits. */
 @Composable
 fun PinField(value: String, onChange: (String) -> Unit, label: String) {
+    val active = LocalUserActivity.current
     OutlinedTextField(
-        value = value, onValueChange = { onChange(it.filter(Char::isDigit).take(8)) },
+        value = value, onValueChange = { active(); onChange(it.filter(Char::isDigit).take(8)) },
         label = { Text(label) }, singleLine = true, visualTransformation = PasswordVisualTransformation(),
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
         modifier = Modifier.fillMaxWidth())
@@ -187,6 +193,38 @@ fun Banner(text: String, isError: Boolean, onDismiss: () -> Unit) {
         Text(if (isError) "Error: $text" else text, color = if (isError) Palette.errorInk else Palette.goodGreen,
             modifier = Modifier.weight(1f).padding(vertical = 10.dp))
         TextButton(onClick = onDismiss) { Text("Dismiss") }
+    }
+}
+
+/**
+ * The app-wide error and notice lines under the top bar. Both Text nodes are always composed and
+ * carry the live region themselves, so a new message is a text change TalkBack reliably announces
+ * (assertive for errors, polite for notices). Empty messages take no space.
+ */
+@Composable
+fun StatusArea(m: AppModel) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        StatusLine(m.error?.let { "Error: $it" } ?: "", isError = true) { m.error = null }
+        StatusLine(m.notice ?: "", isError = false) { m.notice = null }
+    }
+}
+
+@Composable
+private fun StatusLine(text: String, isError: Boolean, onDismiss: () -> Unit) {
+    val shown = text.isNotEmpty()
+    Row(
+        (if (shown) Modifier.padding(top = 8.dp).fillMaxWidth().clip(RoundedCornerShape(12.dp))
+            .background(if (isError) Palette.errorBg else Palette.noticeBg).padding(start = 12.dp)
+        else Modifier.fillMaxWidth()),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text, color = if (isError) Palette.errorInk else Palette.goodGreen,
+            modifier = Modifier.weight(1f)
+                .semantics { liveRegion = if (isError) LiveRegionMode.Assertive else LiveRegionMode.Polite }
+                .then(if (shown) Modifier.padding(vertical = 10.dp) else Modifier))
+        if (shown) TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) {
+            Text("Dismiss", modifier = Modifier.semantics { contentDescription = if (isError) "Dismiss error" else "Dismiss message" })
+        }
     }
 }
 

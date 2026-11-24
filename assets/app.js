@@ -101,7 +101,14 @@
         clearTimeout(toastTimer);
         toastTimer = setTimeout(() => { t.hidden = true; }, kind === 'error' ? 7000 : 3800);
     }
-    function announce(msg) { $('#sr-status').textContent = msg; }
+    // Clear, then set after a beat, so the same message twice in a row is still read.
+    let announceTimer = null;
+    function announce(msg) {
+        const s = $('#sr-status');
+        s.textContent = '';
+        clearTimeout(announceTimer);
+        announceTimer = setTimeout(() => { s.textContent = msg; }, 60);
+    }
 
     // Validation error tied to a field: marks it invalid, shows an inline message
     // the field references (aria-describedby), and moves focus to it so a screen
@@ -119,7 +126,14 @@
         }
         input.setAttribute('aria-invalid', 'true');
         errEl.textContent = msg;
+        if (!input._errClear) {
+            input._errClear = true;
+            const clear = () => { input.removeAttribute('aria-invalid'); const e = document.getElementById(errId); if (e) e.textContent = ''; };
+            input.addEventListener('input', clear);
+            input.addEventListener('change', clear);
+        }
         input.focus();
+        announce('Error: ' + msg);
     }
 
     function fmtDate(ymd) {
@@ -145,7 +159,10 @@
     }
 
     const EMOJIS = ['🙂','😀','😎','🦄','🐶','🐱','🦊','🐸','🦁','🐧','🦋','🌟','🚀','⚽','🎨','🎸','📚','🌈','🍎','🦖'];
+    // Plain names, so screen readers and voice control (Dragon, Voice Control) can say them.
+    const EMOJI_NAMES = ['Smile','Grin','Cool','Unicorn','Dog','Cat','Fox','Frog','Lion','Penguin','Butterfly','Star','Rocket','Soccer ball','Paint palette','Guitar','Books','Rainbow','Apple','Dinosaur'];
     const COLORS = ['#5b8def','#e0556f','#2e9e6b','#e08a1e','#8b5cf6','#0ea5b7','#d2543f','#7a8a3a'];
+    const COLOR_NAMES = ['Blue','Pink','Green','Orange','Purple','Teal','Red','Olive'];
     const MOODS = [
         { v: 'great', label: '😄 Great' },
         { v: 'good',  label: '🙂 Good' },
@@ -244,44 +261,72 @@
 
     // -------------------------------------------------- modal
     let lastFocus = null;
-    function openModal(title, contentNode, actionsNode) {
+    let modalSeq = 0;
+    // opts: { onClose } runs however the dialog closes (button, Escape, backdrop).
+    function openModal(title, contentNode, actionsNode, opts) {
+        opts = opts || {};
+        if (state._modal) closeModal(false);
         lastFocus = document.activeElement;
-        const close = () => closeModal();
-        const dialog = el('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': title }, [
-            el('h2', { text: title }),
+        lastFocus = lastFocus && lastFocus.dataset && lastFocus.dataset.fkey ? { fkey: lastFocus.dataset.fkey, node: lastFocus } : { node: lastFocus };
+        const id = 'dlg-' + (++modalSeq);
+        if (contentNode && !contentNode.id) contentNode.id = id + '-desc';
+        const dialog = el('div', {
+            class: 'modal', role: opts.alert ? 'alertdialog' : 'dialog', 'aria-modal': 'true',
+            'aria-labelledby': id + '-title',
+            'aria-describedby': opts.describe === false || !contentNode ? null : contentNode.id
+        }, [
+            el('h2', { id: id + '-title', text: title }),
             contentNode,
             actionsNode || null
         ]);
+        // Don't let a stray click on the backdrop throw away typed changes.
+        let dirty = false;
+        dialog.addEventListener('input', () => { dirty = true; });
+        dialog.addEventListener('change', () => { dirty = true; });
         const backdrop = el('div', {
             class: 'modal-backdrop',
-            onclick: (e) => { if (e.target === backdrop) close(); }
+            onclick: (e) => { if (e.target === backdrop && !dirty) closeModal(); }
         }, [dialog]);
         const focusables = () => dialog.querySelectorAll(
             'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])');
-        backdrop.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') { close(); return; }
+        // On the document, so Escape and the Tab trap keep working even if the
+        // focused element is removed from the dialog.
+        const onKey = (e) => {
+            if (e.key === 'Escape') { e.preventDefault(); closeModal(); return; }
             if (e.key !== 'Tab') return;
-            // Keep Tab focus inside the dialog (WCAG 2.4.3 — no escaping to inert page).
             const f = focusables();
             if (!f.length) return;
             const first = f[0], last = f[f.length - 1];
+            if (!dialog.contains(document.activeElement)) { e.preventDefault(); (e.shiftKey ? last : first).focus(); return; }
             if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
             else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
-        });
+        };
+        document.addEventListener('keydown', onKey);
         // The rest of the page becomes inert (unfocusable + hidden from assistive
-        // tech) so focus can't land behind the open dialog.
+        // tech) so focus can't land behind the open dialog. The live region and
+        // toast are outside these, so messages are still read.
         document.querySelectorAll('.skip-link, .app-header, #main, .app-footer')
             .forEach(elm => elm.setAttribute('inert', ''));
         document.body.appendChild(backdrop);
         const focusable = dialog.querySelector('input, select, textarea, button');
         if (focusable) focusable.focus();
         state._modal = backdrop;
+        state._modalOnKey = onKey;
+        state._modalOnClose = opts.onClose || null;
         return backdrop;
     }
-    function closeModal() {
+    // restoreFocus=false when the caller is about to navigate or re-render.
+    function closeModal(restoreFocus) {
         if (state._modal) { state._modal.remove(); state._modal = null; }
+        if (state._modalOnKey) { document.removeEventListener('keydown', state._modalOnKey); state._modalOnKey = null; }
         document.querySelectorAll('[inert]').forEach(elm => elm.removeAttribute('inert'));
-        if (lastFocus && lastFocus.focus) lastFocus.focus();
+        const after = state._modalOnClose; state._modalOnClose = null;
+        if (restoreFocus !== false && lastFocus) {
+            let n = lastFocus.node;
+            if ((!n || !n.isConnected) && lastFocus.fkey) n = document.querySelector('[data-fkey="' + lastFocus.fkey + '"]');
+            if (n && n.isConnected && n.focus) n.focus();
+        }
+        if (after) after();
     }
 
     // -------------------------------------------------- navigation
@@ -329,9 +374,24 @@
         if (m) m.focus();
     }
 
+    // Something focusable we can find again after a re-render: a data-fkey, or an id.
+    function focusKey(node) {
+        if (!node || node === document.body || !node.closest) return null;
+        if (!node.closest('#view')) return null;
+        if (node.dataset && node.dataset.fkey) return '[data-fkey="' + node.dataset.fkey + '"]';
+        if (node.id) return '#' + CSS.escape(node.id);
+        return null;
+    }
+
     async function render() {
         updateHeader();
         const root = $('#view');
+        // Re-rendering in place would throw focus to the top of the page; remember
+        // what was focused so it can be put back (WCAG 2.4.3).
+        const active = document.activeElement;
+        const keepSel = state.view === state._lastView ? focusKey(active) : null;
+        const hadFocusInView = !!(active && active !== document.body && active.closest && active.closest('#view'));
+        root.setAttribute('aria-busy', 'true');
         root.innerHTML = '';
         root.appendChild(el('p', { class: 'muted', text: 'Loading…' }));
         let node;
@@ -349,9 +409,10 @@
         }
         root.innerHTML = '';
         root.appendChild(node);
+        root.removeAttribute('aria-busy');
         // Page title reflects the current screen so it's announced + shown in history (WCAG 2.4.2).
         const _h = root.querySelector('h1, h2');
-        if (_h) document.title = _h.textContent.trim().replace(/\s+/g, ' ') + ' · Chore Slayer';
+        if (_h) document.title = _h.textContent.replace(/[\p{Extended_Pictographic}\uFE0F\u200D]/gu, '').trim().replace(/\s+/g, ' ') + ' · Chore Slayer';
         // --- Focus management for screen readers ---
         if (state._focusSel) {
             // Focus a specific element after re-render (e.g. switching a tab lands
@@ -360,6 +421,14 @@
             state._focusSel = null;
             if (target) {
                 if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
+                try { target.focus(); } catch (e) { /* ignore */ }
+            }
+        } else if (state.view === state._lastView && (keepSel || hadFocusInView)) {
+            // Same screen, rebuilt: return focus to the same control, or to the
+            // panel heading if that control is gone.
+            const target = (keepSel && root.querySelector(keepSel)) || root.querySelector('.panel-title, h2');
+            if (target) {
+                if (!target.matches('button, input, select, textarea, a[href]') && !target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
                 try { target.focus(); } catch (e) { /* ignore */ }
             }
         } else if (state.view !== state._lastView) {
@@ -440,9 +509,9 @@
     }
 
     function createFamilyCard() {
-        const name = el('input', { type: 'text', id: 'f-name', autocomplete: 'off', 'aria-label': 'Family name (optional)' });
-        const pin = el('input', { type: 'password', id: 'p-pin', inputmode: 'numeric', autocomplete: 'new-password', 'aria-label': 'New PIN' });
-        const pin2 = el('input', { type: 'password', id: 'p-pin2', inputmode: 'numeric', autocomplete: 'new-password', 'aria-label': 'Confirm PIN' });
+        const name = el('input', { type: 'text', id: 'f-name', autocomplete: 'off' });
+        const pin = el('input', { type: 'password', id: 'p-pin', inputmode: 'numeric', autocomplete: 'new-password', 'aria-describedby': 'p-pin-hint' });
+        const pin2 = el('input', { type: 'password', id: 'p-pin2', inputmode: 'numeric', autocomplete: 'new-password' });
         const submit = async (e) => {
             e.preventDefault();
             if (!/^\d{4,8}$/.test(pin.value)) { fieldError(pin, 'PIN must be 4 to 8 digits.'); return; }
@@ -457,7 +526,7 @@
             el('h2', { class: 'panel-title', text: 'Create your family' }),
             el('p', { class: 'panel-sub', text: 'Choose a parent PIN (4–8 digits). You’ll get a Family Code to add more devices, sign in on the web, or recover.' }),
             el('div', { class: 'field' }, [el('label', { for: 'f-name', text: 'Family name (optional)' }), name]),
-            el('div', { class: 'field' }, [el('label', { for: 'p-pin', text: 'Parent PIN' }), pin]),
+            el('div', { class: 'field' }, [el('label', { for: 'p-pin', text: 'Parent PIN' }), pin, el('p', { class: 'help', id: 'p-pin-hint', text: '4 to 8 digits' })]),
             el('div', { class: 'field' }, [el('label', { for: 'p-pin2', text: 'Confirm PIN' }), pin2]),
             el('button', { class: 'btn btn--lg btn--block', type: 'submit' }, 'Create family')
         ]);
@@ -488,17 +557,23 @@
     function showFamilyCode(code, proceed) {
         const content = el('div', {}, [
             el('p', { text: 'Save this Family Code somewhere safe. You’ll need it to add another device, sign in on the web, or recover your account:' }),
-            el('div', { style: 'font-size:1.8rem;font-weight:800;letter-spacing:.15em;text-align:center;margin:14px 0;user-select:all' }, code || '—'),
+            el('div', { style: 'font-size:1.8rem;font-weight:800;letter-spacing:.15em;text-align:center;margin:14px 0;user-select:all' }, [
+                el('span', { 'aria-hidden': 'true', text: code || '—' }),
+                el('span', { class: 'sr-only', text: 'Family code: ' + (code ? code.split('').join(' ') : 'none') })
+            ]),
             el('p', { class: 'muted', text: 'From now on, your PIN unlocks the parent area on this device.' })
         ]);
+        // However the dialog is closed (Got it, Escape, backdrop), a brand-new family
+        // goes on to the parent area, so nobody is left on the Create form.
         openModal('Your Family Code', content, el('div', { class: 'modal-actions' }, [
-            el('button', { class: 'btn', onclick: () => { closeModal(); if (proceed) go('parent'); } }, 'Got it')
-        ]));
+            el('button', { class: 'btn', onclick: () => closeModal(!proceed) }, 'Got it')
+        ]), { onClose: proceed ? () => go('parent') : null });
     }
 
     function kidLoginCard() {
-        const first = el('input', { type: 'text', id: 'k-first', autocomplete: 'given-name', 'aria-label': 'First name' });
-        const last = el('input', { type: 'text', id: 'k-last', autocomplete: 'family-name', 'aria-label': 'Last name' });
+        // autocomplete off: on a shared family device the browser would suggest the owner's name.
+        const first = el('input', { type: 'text', id: 'k-first', autocomplete: 'off' });
+        const last = el('input', { type: 'text', id: 'k-last', autocomplete: 'off' });
         const submit = async (e) => {
             e.preventDefault();
             const f = first.value.trim(), l = last.value.trim();
@@ -514,7 +589,7 @@
                 localStorage.setItem(CHILD_KEY, JSON.stringify(r.child));
                 pushSync({ childId: r.child.id });
                 go('kid');
-            } catch (err) { toast(err.message, 'error'); }
+            } catch (err) { fieldError(first, err.message); }
         };
         return el('form', { class: 'card', onsubmit: submit }, [
             el('h2', { class: 'panel-title', text: 'Hi! Let’s log in 👋' }),
@@ -526,7 +601,7 @@
     }
 
     function parentLoginCard() {
-        const pin = el('input', { type: 'password', id: 'p-pin', inputmode: 'numeric', autocomplete: 'current-password', 'aria-label': 'Parent PIN' });
+        const pin = el('input', { type: 'password', id: 'p-pin', inputmode: 'numeric', autocomplete: 'current-password' });
         const submit = async (e) => {
             e.preventDefault();
             try {
@@ -534,7 +609,7 @@
                 setToken(r.token);
                 if (r.family) setFamily(r.family);
                 go('parent');
-            } catch (err) { toast(err.message, 'error'); }
+            } catch (err) { fieldError(pin, err.message); }
         };
         return el('form', { class: 'card', onsubmit: submit }, [
             el('h2', { class: 'panel-title', text: 'Parent sign-in' }),
@@ -545,6 +620,7 @@
     }
 
     function kidLogout() {
+        closeModal(false);
         if (state.child) pushSync({ childId: '' });
         state.child = null; state.kidData = null;
         localStorage.removeItem(CHILD_KEY);
@@ -555,6 +631,8 @@
     // family). Lands on the kid sign-in tab by default so the device can be
     // handed straight to a kid.
     async function parentLogout(tab) {
+        closeModal(false);
+        hideIdleWarning();
         try { await api('parent_logout', { method: 'POST' }); } catch (e) {}
         setToken(null);
         state.loginTab = tab === 'parent' ? 'parent' : 'kid';
@@ -597,14 +675,14 @@
             SLOTS.forEach(slot => {
                 const inSlot = data.tasks.filter(t => (t.slot || 'anytime') === slot.v);
                 if (!inSlot.length) return;
-                wrap.appendChild(el('h3', { class: 'group-title' }, [slot.emoji + ' ' + slot.label]));
+                wrap.appendChild(el('h3', { class: 'group-title' }, [el('span', { 'aria-hidden': 'true', text: slot.emoji + ' ' }), slot.label]));
                 wrap.appendChild(taskGrid(inSlot));
             });
         }
 
         wrap.appendChild(el('div', { style: 'margin-top:26px; text-align:center;' }, [
-            el('button', { class: 'btn btn--good btn--lg', onclick: () => go('kidSummary') },
-                'See my day 🎉')
+            el('button', { class: 'btn btn--good btn--lg', 'data-fkey': 'see-my-day', onclick: () => go('kidSummary') },
+                ['See my day ', el('span', { 'aria-hidden': 'true', text: '🎉' })])
         ]));
         const reminders = await kidReminderCard();
         if (reminders) wrap.appendChild(reminders);
@@ -616,13 +694,13 @@
         const fill = el('div', { class: 'progress-fill', id: 'kid-progress-fill', style: 'width:' + p.pct + '%' });
         return el('div', { class: 'progress-wrap' }, [
             el('div', { class: 'progress-label' }, [
-                el('span', { id: 'kid-progress-text', text: p.full + ' of ' + p.total + ' done' }),
+                el('span', { id: 'kid-progress-text', text: p.full + ' of ' + p.total + ' tasks finished' }),
                 el('span', { id: 'kid-progress-pct', text: p.pct + '%' })
             ]),
             el('div', {
                 class: 'progress-bar', role: 'progressbar',
                 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': p.pct,
-                'aria-valuetext': p.full + ' of ' + p.total + ' tasks done, ' + p.pct + ' percent',
+                'aria-valuetext': p.full + ' of ' + p.total + ' tasks finished, ' + p.pct + ' percent of all checks done',
                 'aria-label': 'Daily progress'
             }, [fill])
         ]);
@@ -650,10 +728,15 @@
         const wrap = el('div', { class: 'task-wrap' });
         const check = el('span', { class: 'task__check', 'aria-hidden': 'true' });
         const titleEl = el('span', { class: 'task__title', text: task.title });
-        const subEl = el('span', { class: 'task__sub' });
+        const subEl = el('span', { class: 'task__sub', id: 'tsub-' + task.id });
         const timeStr = task.time ? fmtTime(task.time) : '';
         const steps = task.subtasks || [];
-        const tile = el('button', { class: 'task', type: 'button' }, [
+        // aria-pressed carries checked / not checked; the name is the title (and time),
+        // and the visible note (type, follow-up progress) is the description.
+        const tile = el('button', {
+            class: 'task', type: 'button', 'data-fkey': 'task-' + task.id,
+            'aria-describedby': 'tsub-' + task.id
+        }, [
             el('span', { class: 'task__emoji', 'aria-hidden': 'true', text: task.emoji }),
             el('span', { class: 'task__body' }, [titleEl, subEl]),
             check
@@ -663,41 +746,64 @@
         let subBox = null;
         const refreshTile = () => {
             const st = taskState(task);
+            const left = steps.length - stepsDoneCount(task);
             tile.dataset.state = st;
             tile.setAttribute('aria-pressed', task.done ? 'true' : 'false');
             check.textContent = st === 'done' ? '✓' : (st === 'partial' ? '–' : '');
             let note = (timeStr ? timeStr + ' · ' : '') + (task.type === 'activity' ? 'Activity' : 'Chore');
-            if (steps.length) note += ' · ' + stepsDoneCount(task) + '/' + steps.length + ' follow-ups';
+            if (steps.length) {
+                note += ' · ' + (st === 'done' ? 'All done!'
+                    : st === 'partial' ? left + ' of ' + steps.length + ' follow-up' + (steps.length > 1 ? 's' : '') + ' left'
+                    : 'then ' + steps.length + ' follow-up check' + (steps.length > 1 ? 's' : ''));
+            }
             subEl.textContent = note;
-            const word = st === 'done' ? 'all done'
-                : st === 'partial' ? ('checked, ' + (steps.length - stepsDoneCount(task)) + ' follow-ups left')
-                : 'not done yet';
-            tile.setAttribute('aria-label', task.title + (timeStr ? ' at ' + timeStr : '') + ' — ' + word);
+            tile.setAttribute('aria-label', task.title + (timeStr ? ', ' + timeStr : ''));
             if (subBox) subBox.hidden = !task.done;
         };
+        task._refresh = refreshTile;
 
         if (steps.length) {
-            subBox = el('div', { class: 'subtasks' }, [el('p', { class: 'subtasks__title', text: 'Did you also…' })]);
-            steps.forEach(st => subBox.appendChild(subCheck(task, st, refreshTile)));
+            const headId = 'st-' + task.id;
+            subBox = el('div', { class: 'subtasks', role: 'group', 'aria-labelledby': headId }, [
+                el('p', { class: 'subtasks__title', id: headId }, [
+                    'Did you also…',
+                    el('span', { class: 'sr-only', text: ' Follow-up checks for ' + task.title })
+                ])
+            ]);
+            steps.forEach((st, i) => subBox.appendChild(subCheck(task, st, i, refreshTile)));
         }
 
+        let busy = false;
         tile.addEventListener('click', async () => {
-            tile.disabled = true;
+            // A busy flag instead of `disabled`: disabling the focused button
+            // would throw keyboard and screen-reader focus to the top of the page.
+            if (busy) return;
+            busy = true; tile.setAttribute('aria-busy', 'true');
             try {
                 const r = await api('toggle_completion', {
                     method: 'POST',
                     body: { childId: state.child.id, taskId: task.id, day: state.today }
                 });
                 task.done = r.completed;
+                // Unchecking a main task clears its follow-ups on the server too.
+                const cleared = !task.done && steps.some(s => s.done);
+                if (!task.done) steps.forEach(s => { s.done = false; if (s._refresh) s._refresh(); });
                 const entry = state.kidData.tasks.find(x => x.id === task.id);
-                if (entry) entry.done = task.done;
+                if (entry && entry !== task) entry.done = task.done;
                 refreshTile();
                 recomputeKidProgress();
-                if (subBox && task.done) announce('Nice! Now finish the follow-up checks for ' + task.title + '.');
-                else announce(task.title + (task.done ? ' checked.' : ' unchecked.'));
+                const left = steps.length - stepsDoneCount(task);
+                if (task.done && steps.length && left) {
+                    const names = steps.filter(s => !s.done).map(s => s.title).join(', ');
+                    announce(task.title + ' checked. ' + left + ' follow-up check' + (left > 1 ? 's' : '') + ' below: ' + names + '.');
+                } else if (task.done) {
+                    announce(task.title + (steps.length ? ' all done!' : ' done!'));
+                } else {
+                    announce(task.title + ' unchecked.' + (cleared ? ' Its follow-up checks were cleared.' : ''));
+                }
             } catch (err) {
                 toast(err.message, 'error');
-            } finally { tile.disabled = false; }
+            } finally { busy = false; tile.removeAttribute('aria-busy'); }
         });
 
         refreshTile();
@@ -707,29 +813,34 @@
     }
 
     // A single follow-up check; onChange lets the parent tile update its state/progress.
-    function subCheck(parentTask, st, onChange) {
+    function subCheck(parentTask, st, index, onChange) {
+        const n = (parentTask.subtasks || []).length;
         const box = el('span', { class: 'subcheck__box', 'aria-hidden': 'true', text: '✓' });
         const b = el('button', {
-            class: 'subcheck', type: 'button',
-            'aria-pressed': st.done ? 'true' : 'false',
-            'aria-label': st.title + (st.done ? ' — done' : ' — not done yet')
+            class: 'subcheck', type: 'button', 'data-fkey': 'sub-' + st.id,
+            // Visible title first (label in name), then where it belongs.
+            'aria-label': st.title + ', step ' + (index + 1) + ' of ' + n + ' for ' + parentTask.title
         }, [box, el('span', { text: st.title })]);
+        st._refresh = () => b.setAttribute('aria-pressed', st.done ? 'true' : 'false');
+        st._refresh();
+        let busy = false;
         b.addEventListener('click', async () => {
-            b.disabled = true;
+            if (busy) return;
+            busy = true; b.setAttribute('aria-busy', 'true');
             try {
                 const r = await api('toggle_completion', {
                     method: 'POST',
                     body: { childId: state.child.id, taskId: st.id, day: state.today }
                 });
                 st.done = r.completed;
-                b.setAttribute('aria-pressed', st.done ? 'true' : 'false');
-                b.setAttribute('aria-label', st.title + (st.done ? ' — done' : ' — not done yet'));
+                st._refresh();
                 if (onChange) onChange();
                 recomputeKidProgress();
-                announce(st.title + (st.done ? ' checked.' : ' unchecked.'));
+                if (st.done && taskComplete(parentTask)) announce(st.title + ' checked. ' + parentTask.title + ' is all done!');
+                else announce(st.title + (st.done ? ' checked.' : ' unchecked.'));
             } catch (err) {
                 toast(err.message, 'error');
-            } finally { b.disabled = false; }
+            } finally { busy = false; b.removeAttribute('aria-busy'); }
         });
         return b;
     }
@@ -753,8 +864,8 @@
         if (fill) {
             fill.style.width = p.pct + '%';
             fill.parentElement.setAttribute('aria-valuenow', p.pct);
-            fill.parentElement.setAttribute('aria-valuetext', p.full + ' of ' + p.total + ' tasks done, ' + p.pct + ' percent');
-            $('#kid-progress-text').textContent = p.full + ' of ' + p.total + ' done';
+            fill.parentElement.setAttribute('aria-valuetext', p.full + ' of ' + p.total + ' tasks finished, ' + p.pct + ' percent of all checks done');
+            $('#kid-progress-text').textContent = p.full + ' of ' + p.total + ' tasks finished';
             $('#kid-progress-pct').textContent = p.pct + '%';
         }
     }
@@ -773,14 +884,15 @@
             el('h2', { class: 'panel-title', text: state.child.firstName + "'s Day" }),
             el('p', { class: 'muted', text: fmtDate(state.today) }),
             ring(pct),
-            el('p', { class: 'cheer', text: cheerFor(pct) }),
-            el('div', { class: 'stars', 'aria-label': starCount(pct) + ' out of 5 stars',
+            (() => { const c = cheerFor(pct); const i = c.lastIndexOf(' ');
+                return el('p', { class: 'cheer' }, [c.slice(0, i), el('span', { 'aria-hidden': 'true', text: c.slice(i) })]); })(),
+            el('div', { class: 'stars', role: 'img', 'aria-label': starCount(pct) + ' out of 5 stars',
                 text: '★★★★★☆☆☆☆☆'.slice(5 - starCount(pct), 10 - starCount(pct)) })
         ]));
 
         // Accessible text summary
         wrap.appendChild(el('p', { class: 'sr-only' },
-            'You finished ' + c.done + ' out of ' + c.total + ' tasks, ' + pct + ' percent.'));
+            'You finished ' + c.done + ' out of ' + c.total + ' tasks. ' + pct + ' percent of all checks are done.'));
 
         wrap.appendChild(el('div', { class: 'stat-grid' }, [
             stat(c.done, 'Finished'),
@@ -794,31 +906,42 @@
             const timeStr = t.time ? fmtTime(t.time) : '';
             const complete = (t.complete !== undefined) ? t.complete : taskComplete(t);
             const partial = !complete && t.done;
+            const subs = t.subtasks || [];
             const cls = complete ? 'done' : (partial ? 'partial' : 'todo');
             const icon = complete ? '✅' : (partial ? '🟡' : '⬜');
-            const badge = complete ? 'Done' : (partial ? 'Partly' : 'Not yet');
-            list.appendChild(el('li', { class: 'summary-item ' + cls }, [
+            const badge = complete ? 'Done'
+                : (partial ? stepsDoneCount(t) + ' of ' + subs.length + ' follow-ups done' : 'Not yet');
+            const li = el('li', { class: 'summary-item ' + cls }, [
                 el('span', { 'aria-hidden': 'true', text: icon }),
                 el('span', { class: 'grow' }, [
-                    t.emoji + ' ' + t.title,
-                    timeStr ? el('span', { class: 'meta', text: '  ·  ' + slotInfo(t.slot).emoji + ' ' + timeStr }) : null
+                    el('span', { 'aria-hidden': 'true', text: t.emoji + ' ' }),
+                    t.title,
+                    timeStr ? el('span', { class: 'meta' }, [
+                        el('span', { 'aria-hidden': 'true', text: '  ·  ' + slotInfo(t.slot).emoji + ' ' }),
+                        el('span', { class: 'sr-only', text: ', ' }), timeStr]) : null
                 ]),
-                el('span', { class: 'badge', text: badge })
-            ]));
-            // Follow-up checks, indented beneath the task.
-            (t.subtasks || []).forEach(s => {
-                list.appendChild(el('li', { class: 'summary-subitem ' + (s.done ? 'done' : 'todo') }, [
-                    el('span', { 'aria-hidden': 'true', text: s.done ? '✅' : '⬜' }),
-                    el('span', { class: 'grow', text: s.title }),
-                    el('span', { class: 'badge', text: s.done ? 'Done' : 'Not yet' })
-                ]));
-            });
+                el('span', { class: 'badge' }, [el('span', { class: 'sr-only', text: ': ' }), badge])
+            ]);
+            // Follow-up checks, nested inside their task so the relationship is real.
+            if (subs.length) {
+                const sub = el('ul', { class: 'summary-sublist', 'aria-label': 'Follow-up checks for ' + t.title });
+                subs.forEach(st => {
+                    sub.appendChild(el('li', { class: 'summary-subitem ' + (st.done ? 'done' : 'todo') }, [
+                        el('span', { 'aria-hidden': 'true', text: st.done ? '✅' : '⬜' }),
+                        el('span', { class: 'grow', text: st.title }),
+                        el('span', { class: 'badge' }, [el('span', { class: 'sr-only', text: ': ' }), st.done ? 'Done' : 'Not yet'])
+                    ]));
+                });
+                li.appendChild(sub);
+            }
+            list.appendChild(li);
         });
         if (data.tasks.length) wrap.appendChild(list);
         else wrap.appendChild(el('p', { class: 'empty' }, 'Nothing on the list today.'));
 
         wrap.appendChild(el('div', { class: 'modal__actions no-print', style: 'margin-top:22px' }, [
-            el('button', { class: 'btn btn--ghost', onclick: () => go('kid') }, '← Back to my chores'),
+            el('button', { class: 'btn btn--ghost', onclick: () => { state._focusSel = '[data-fkey="see-my-day"]'; go('kid'); } },
+                [el('span', { 'aria-hidden': 'true', text: '← ' }), 'Back to my chores']),
             el('button', { class: 'btn', onclick: () => window.print() }, '🖨️ Print my day')
         ]));
         return wrap;
@@ -832,7 +955,7 @@
         svg.setAttribute('width', '160'); svg.setAttribute('height', '160');
         svg.setAttribute('class', 'ring');
         svg.setAttribute('role', 'img');
-        svg.setAttribute('aria-label', pct + ' percent of tasks done');
+        svg.setAttribute('aria-label', pct + ' percent of all checks done');
         svg.innerHTML =
             '<circle class="ring__bg" cx="65" cy="65" r="' + r + '" stroke-width="13"></circle>' +
             '<circle class="ring__fg" cx="65" cy="65" r="' + r + '" stroke-width="13" ' +
@@ -919,7 +1042,7 @@
                 el('h2', { class: 'panel-title', text: 'Children' }),
                 el('p', { class: 'panel-sub', text: 'Add the kids who will use the app, or remove ones who no longer need it.' })
             ]),
-            el('button', { class: 'btn', onclick: () => openChildForm(null) }, '➕ Add child')
+            el('button', { class: 'btn', 'data-fkey': 'add-child', onclick: () => openChildForm(null) }, [el('span', { 'aria-hidden': 'true', text: '➕ ' }), 'Add child'])
         ]));
 
         if (!state.children.length) {
@@ -935,8 +1058,8 @@
                     el('div', { class: 'meta', text: 'Logs in with this exact name' })
                 ]),
                 el('div', { class: 'actions' }, [
-                    el('button', { class: 'btn btn--small btn--ghost', onclick: () => openChildForm(c) }, 'Edit'),
-                    el('button', { class: 'btn btn--small btn--danger', onclick: () => confirmRemoveChild(c) }, 'Remove')
+                    el('button', { class: 'btn btn--small btn--ghost', 'data-fkey': 'cedit-' + c.id, 'aria-label': 'Edit ' + c.firstName + ' ' + c.lastName, onclick: () => openChildForm(c) }, 'Edit'),
+                    el('button', { class: 'btn btn--small btn--danger', 'data-fkey': 'crm-' + c.id, 'aria-label': 'Remove ' + c.firstName + ' ' + c.lastName, onclick: () => confirmRemoveChild(c) }, 'Remove')
                 ])
             ]));
         });
@@ -946,14 +1069,16 @@
 
     function openChildForm(child) {
         const isEdit = !!child;
-        const first = el('input', { type: 'text', value: child ? child.firstName : '', 'aria-label': 'First name' });
-        const last = el('input', { type: 'text', value: child ? child.lastName : '', 'aria-label': 'Last name' });
+        const f = 'cf' + (++formSeq);
+        const first = el('input', { type: 'text', id: f + '-first', autocomplete: 'off', value: child ? child.firstName : '' });
+        const last = el('input', { type: 'text', id: f + '-last', autocomplete: 'off', value: child ? child.lastName : '' });
         let chosenEmoji = child ? child.emoji : '🙂';
         let chosenColor = child ? child.color : COLORS[0];
 
-        const emojiRow = el('div', { class: 'choice-row' });
-        EMOJIS.forEach(e => {
-            const b = el('button', { type: 'button', class: 'choice', 'aria-pressed': e === chosenEmoji ? 'true' : 'false', text: e });
+        const emojiRow = el('div', { class: 'choice-row', role: 'group', 'aria-labelledby': f + '-icon-lbl' });
+        EMOJIS.forEach((e, i) => {
+            const b = el('button', { type: 'button', class: 'choice', 'aria-pressed': e === chosenEmoji ? 'true' : 'false',
+                'aria-label': EMOJI_NAMES[i], title: EMOJI_NAMES[i], text: e });
             b.addEventListener('click', () => {
                 chosenEmoji = e;
                 emojiRow.querySelectorAll('.choice').forEach(x => x.setAttribute('aria-pressed', 'false'));
@@ -961,11 +1086,11 @@
             });
             emojiRow.appendChild(b);
         });
-        const colorRow = el('div', { class: 'choice-row' });
-        COLORS.forEach(col => {
+        const colorRow = el('div', { class: 'choice-row', role: 'group', 'aria-labelledby': f + '-color-lbl' });
+        COLORS.forEach((col, i) => {
             const b = el('button', {
-                type: 'button', class: 'choice', 'aria-pressed': col === chosenColor ? 'true' : 'false',
-                'aria-label': 'color ' + col,
+                type: 'button', class: 'choice choice--swatch', 'aria-pressed': col === chosenColor ? 'true' : 'false',
+                'aria-label': COLOR_NAMES[i], title: COLOR_NAMES[i],
                 style: 'background:' + col + ';width:46px'
             });
             b.addEventListener('click', () => {
@@ -978,23 +1103,24 @@
 
         const content = el('div', {}, [
             el('div', { class: 'row' }, [
-                el('div', { class: 'field' }, [el('label', { text: 'First name' }), first]),
-                el('div', { class: 'field' }, [el('label', { text: 'Last name' }), last]),
+                el('div', { class: 'field' }, [el('label', { for: f + '-first', text: 'First name' }), first]),
+                el('div', { class: 'field' }, [el('label', { for: f + '-last', text: 'Last name' }), last]),
             ]),
-            el('div', { class: 'field' }, [el('label', { text: 'Pick an icon' }), emojiRow]),
-            el('div', { class: 'field' }, [el('label', { text: 'Pick a color' }), colorRow]),
+            el('div', { class: 'field' }, [el('span', { class: 'label', id: f + '-icon-lbl', text: 'Pick an icon' }), emojiRow]),
+            el('div', { class: 'field' }, [el('span', { class: 'label', id: f + '-color-lbl', text: 'Pick a color' }), colorRow]),
             isEdit ? el('p', { class: 'help' }, 'Tip: “Remove” keeps the child’s report history. Use it for kids who no longer need the app.') : null
         ]);
         const save = async () => {
-            const f = first.value.trim(), l = last.value.trim();
-            if (!f || !l) { toast('First and last name are required.', 'error'); return; }
+            const fn = first.value.trim(), l = last.value.trim();
+            if (!fn) { fieldError(first, 'Type a first name.'); return; }
+            if (!l) { fieldError(last, 'Type a last name.'); return; }
             try {
                 if (isEdit) {
-                    await api('update_child', { method: 'POST', body: { id: child.id, firstName: f, lastName: l, emoji: chosenEmoji, color: chosenColor } });
-                    toast('Child updated.', 'success');
+                    await api('update_child', { method: 'POST', body: { id: child.id, firstName: fn, lastName: l, emoji: chosenEmoji, color: chosenColor } });
+                    toast(fn + ' updated.', 'success');
                 } else {
-                    await api('add_child', { method: 'POST', body: { firstName: f, lastName: l, emoji: chosenEmoji, color: chosenColor } });
-                    toast('Child added.', 'success');
+                    await api('add_child', { method: 'POST', body: { firstName: fn, lastName: l, emoji: chosenEmoji, color: chosenColor } });
+                    toast(fn + ' ' + l + ' added.', 'success');
                 }
                 closeModal(); render();
             } catch (err) { toast(err.message, 'error'); }
@@ -1004,7 +1130,7 @@
             el('button', { class: 'btn btn--ghost', onclick: closeModal }, 'Cancel'),
             el('button', { class: 'btn', onclick: save }, isEdit ? 'Save' : 'Add child')
         ]);
-        openModal(isEdit ? 'Edit child' : 'Add a child', content, actions);
+        openModal(isEdit ? 'Edit child' : 'Add a child', content, actions, { describe: false });
     }
 
     function confirmRemoveChild(child) {
@@ -1047,7 +1173,7 @@
                 el('h2', { class: 'panel-title', text: 'Chores & Activities' }),
                 el('p', { class: 'panel-sub', text: 'Set what shows up on a child’s board, which days it repeats, and roughly when.' })
             ]),
-            state.children.length ? el('button', { class: 'btn', onclick: () => openTaskForm(null) }, '➕ Add') : null
+            state.children.length ? el('button', { class: 'btn', 'data-fkey': 'add-task', onclick: () => openTaskForm(null) }, [el('span', { 'aria-hidden': 'true', text: '➕ ' }), 'Add task']) : null
         ]));
 
         if (!state.children.length) {
@@ -1070,8 +1196,8 @@
         data.tasks.forEach(t => {
             const si = slotInfo(t.timeSlot);
             const stepN = (t.subtasks || []).length;
-            const when = si.emoji + ' ' + si.label + (t.timeOfDay ? ' · ' + fmtTime(t.timeOfDay) : '')
-                + (stepN ? '  ·  ☑️ ' + stepN + ' follow-up' + (stepN > 1 ? 's' : '') : '');
+            const when = si.label + (t.timeOfDay ? ', ' + fmtTime(t.timeOfDay) : '')
+                + (stepN ? '  ·  ' + stepN + ' follow-up check' + (stepN > 1 ? 's' : '') : '');
             list.appendChild(el('li', { class: 'list-item' }, [
                 el('span', { class: 'pill-emoji', style: 'background:' + (t.type === 'activity' ? '#f2b705' : '#5b8def'), 'aria-hidden': 'true', text: t.emoji }),
                 el('div', { class: 'grow' }, [
@@ -1082,8 +1208,8 @@
                     el('div', { class: 'meta', text: dowSummary(t.daysOfWeek) + '  ·  ' + when })
                 ]),
                 el('div', { class: 'actions' }, [
-                    el('button', { class: 'btn btn--small btn--ghost', onclick: () => openTaskForm(t) }, 'Edit'),
-                    el('button', { class: 'btn btn--small btn--danger', onclick: () => confirmRemoveTask(t) }, 'Remove')
+                    el('button', { class: 'btn btn--small btn--ghost', 'data-fkey': 'edit-' + t.id, 'aria-label': 'Edit ' + t.title, onclick: () => openTaskForm(t) }, 'Edit'),
+                    el('button', { class: 'btn btn--small btn--danger', 'data-fkey': 'rm-' + t.id, 'aria-label': 'Remove ' + t.title, onclick: () => confirmRemoveTask(t) }, 'Remove')
                 ])
             ]));
         });
@@ -1092,7 +1218,10 @@
     }
 
     function confirmRemoveTask(task) {
-        const content = el('p', {}, 'Remove “' + task.title + '” from this child’s board? Past check-offs stay in your reports.');
+        const n = (task.subtasks || []).length;
+        const content = el('p', {}, 'Remove “' + task.title + '” from this child’s board?' +
+            (n ? ' Its ' + n + ' follow-up check' + (n > 1 ? 's are' : ' is') + ' removed too.' : '') +
+            ' Past check-offs stay in your reports.');
         const actions = el('div', { class: 'modal__actions' }, [
             el('button', { class: 'btn btn--ghost', onclick: closeModal }, 'Cancel'),
             el('button', { class: 'btn btn--danger', onclick: async () => {
@@ -1104,29 +1233,35 @@
         openModal('Remove task', content, actions);
     }
 
+    let formSeq = 0;
     function openTaskForm(task) {
-        const isEdit = !!task;
-        const title = el('input', { type: 'text', value: task ? task.title : '', 'aria-label': 'Task title', placeholder: 'e.g. Make the bed' });
-        const type = el('select', { 'aria-label': 'Type' }, [
+        let isEdit = !!task;
+        const f = 'tf' + (++formSeq);
+        const title = el('input', { type: 'text', id: f + '-title', value: task ? task.title : '', placeholder: 'e.g. Make the bed' });
+        const type = el('select', { id: f + '-type' }, [
             el('option', { value: 'chore' }, 'Chore'),
             el('option', { value: 'activity' }, 'Activity')
         ]);
         if (task) type.value = task.type;
-        const slot = el('select', { 'aria-label': 'Time of day' },
-            SLOTS.map(s => el('option', { value: s.v }, s.emoji + ' ' + s.label)));
+        const slot = el('select', { id: f + '-slot' },
+            SLOTS.map(s => el('option', { value: s.v }, s.label)));
         slot.value = task ? task.timeSlot : 'anytime';
         const time = timeField(task && task.timeOfDay ? task.timeOfDay : '');
 
-        // Weekday checkboxes
+        // Weekday toggles
         const mask = task && /^[01]{7}$/.test(task.daysOfWeek) ? task.daysOfWeek : '1111111';
         const set = {}; for (let i = 0; i < 7; i++) set[i] = mask[i] === '1';
-        const dayRow = el('div', { class: 'choice-row', role: 'group', 'aria-label': 'Days of the week' });
+        const dayErrId = f + '-days-err';
+        const dayRow = el('div', { class: 'choice-row', role: 'group', 'aria-labelledby': f + '-days-lbl', 'aria-describedby': dayErrId });
+        const DAYNAME = { 0: 'Sunday', 1: 'Monday', 2: 'Tuesday', 3: 'Wednesday', 4: 'Thursday', 5: 'Friday', 6: 'Saturday' };
         WEEKDAYS.forEach(d => {
-            const b = el('button', { type: 'button', class: 'choice', 'aria-pressed': set[d.i] ? 'true' : 'false', text: d.label });
-            b.addEventListener('click', () => { set[d.i] = !set[d.i]; b.setAttribute('aria-pressed', set[d.i] ? 'true' : 'false'); });
+            const b = el('button', { type: 'button', class: 'choice', 'aria-pressed': set[d.i] ? 'true' : 'false', title: DAYNAME[d.i] },
+                [d.label, el('span', { class: 'sr-only', text: DAYNAME[d.i].slice(3) })]);
+            b.addEventListener('click', () => { set[d.i] = !set[d.i]; b.setAttribute('aria-pressed', set[d.i] ? 'true' : 'false'); dayErr.textContent = ''; });
             dayRow.appendChild(b);
         });
-        const preset = (m) => { for (let i = 0; i < 7; i++) set[i] = m[i] === '1'; [...dayRow.children].forEach((b, idx) => { const di = WEEKDAYS[idx].i; b.setAttribute('aria-pressed', set[di] ? 'true' : 'false'); }); };
+        const dayErr = el('p', { id: dayErrId, class: 'field-err', role: 'alert' });
+        const preset = (m) => { for (let i = 0; i < 7; i++) set[i] = m[i] === '1'; [...dayRow.children].forEach((b, idx) => { const di = WEEKDAYS[idx].i; b.setAttribute('aria-pressed', set[di] ? 'true' : 'false'); }); dayErr.textContent = ''; announce('Days set: ' + dowSummary(m)); };
         const presets = el('div', { class: 'choice-row', style: 'margin-top:8px' }, [
             el('button', { type: 'button', class: 'btn btn--small btn--ghost', onclick: () => preset('1111111') }, 'Every day'),
             el('button', { type: 'button', class: 'btn btn--small btn--ghost', onclick: () => preset('0111110') }, 'Weekdays'),
@@ -1136,40 +1271,70 @@
         // Follow-up checks editor: rows that reconcile on save.
         const subList = el('div', { class: 'sub-edit-list' });
         const subRows = [];
-        function addSubRow(existing) {
-            const input = el('input', { type: 'text', value: existing ? existing.title : '', 'aria-label': 'Follow-up check', placeholder: 'e.g. Did you wipe the chairs?' });
-            const rec = { id: existing ? existing.id : null, orig: existing ? existing.title : '', input: input, removed: false };
-            const rowEl = el('div', { class: 'sub-edit-row' }, [
-                input,
-                el('button', { type: 'button', class: 'btn btn--small btn--danger', 'aria-label': 'Remove this check', onclick: () => { rec.removed = true; rowEl.remove(); } }, '✕')
-            ]);
+        const addBtn = el('button', { type: 'button', class: 'btn btn--small btn--ghost', onclick: () => addSubRow(null, true) },
+            [el('span', { 'aria-hidden': 'true', text: '➕ ' }), 'Add a follow-up check']);
+        const liveRows = () => subRows.filter(r => !r.removed);
+        // Number every row ("Follow-up check 2") so each field and button has its own name.
+        function renumber() {
+            liveRows().forEach((r, i) => {
+                const n = i + 1;
+                r.label.textContent = 'Follow-up check ' + n;
+                r.removeBtn.setAttribute('aria-label', 'Remove follow-up check ' + n + (r.input.value.trim() ? ': ' + r.input.value.trim() : ''));
+            });
+        }
+        function addSubRow(existing, focusIt) {
+            const rid = f + '-sub-' + (subRows.length + 1);
+            const input = el('input', { type: 'text', id: rid, value: existing ? existing.title : '', placeholder: 'e.g. Did you wipe the chairs?' });
+            const label = el('label', { for: rid, class: 'sr-only' });
+            const rec = { id: existing ? existing.id : null, orig: existing ? existing.title : '', input: input, label: label, removed: false };
+            const removeBtn = el('button', { type: 'button', class: 'btn btn--small btn--danger', onclick: () => {
+                // Pick where focus goes before the row (and its focused button) disappears.
+                const rows = liveRows(); const idx = rows.indexOf(rec);
+                const next = rows[idx + 1] || rows[idx - 1];
+                const gone = input.value.trim();
+                rec.removed = true; rowEl.remove(); renumber();
+                (next ? next.input : addBtn).focus();
+                announce('Follow-up check removed' + (gone ? ': ' + gone : '') + '. It will be deleted when you save.');
+            } }, [el('span', { 'aria-hidden': 'true', text: '✕' }), el('span', { class: 'sr-only', text: 'Remove' })]);
+            rec.removeBtn = removeBtn;
+            input.addEventListener('change', renumber);
+            const rowEl = el('div', { class: 'sub-edit-row' }, [label, input, removeBtn]);
             subRows.push(rec);
             subList.appendChild(rowEl);
-            input.focus();
+            renumber();
+            if (focusIt) { input.focus(); announce('Follow-up check ' + liveRows().length + ' added.'); }
         }
-        (task && task.subtasks ? task.subtasks : []).forEach(addSubRow);
+        (task && task.subtasks ? task.subtasks : []).forEach(st => addSubRow(st, false));
 
+        const helpId = f + '-sub-help';
         const content = el('div', {}, [
-            el('div', { class: 'field' }, [el('label', { text: 'Name' }), title]),
+            el('div', { class: 'field' }, [el('label', { for: f + '-title', text: 'Name' }), title]),
             el('div', { class: 'row' }, [
-                el('div', { class: 'field' }, [el('label', { text: 'Type' }), type]),
-                el('div', { class: 'field' }, [el('label', { text: 'Time of day' }), slot]),
-                el('div', { class: 'field' }, [el('label', { text: 'Specific time' }), time.node, el('div', { class: 'help', text: 'Optional' })])
+                el('div', { class: 'field' }, [el('label', { for: f + '-type', text: 'Type' }), type]),
+                el('div', { class: 'field' }, [el('label', { for: f + '-slot', text: 'Time of day' }), slot]),
+                el('div', { class: 'field' }, [el('span', { class: 'label', text: 'Specific time (optional)' }), time.node])
             ]),
-            el('div', { class: 'field' }, [el('label', { text: 'Repeats on' }), dayRow, presets]),
-            el('div', { class: 'field' }, [
-                el('label', { text: 'Follow-up checks (optional)' }),
-                el('p', { class: 'help', text: 'These appear after the kid checks the main task — e.g. for “Wipe table”: “Did you wipe it twice?”, “Did you wipe the chairs?”' }),
+            el('div', { class: 'field' }, [el('span', { class: 'label', id: f + '-days-lbl', text: 'Repeats on' }), dayRow, dayErr, presets]),
+            el('fieldset', { class: 'field fieldset', 'aria-describedby': helpId }, [
+                el('legend', { text: 'Follow-up checks (optional)' }),
+                el('p', { class: 'help', id: helpId, text: 'These appear after the kid checks the main task, in this order. For example, for “Wipe table”: “Did you wipe it twice?”, “Did you wipe the chairs?”. They are saved when you press ' + (isEdit ? 'Save' : 'Add') + '.' }),
                 subList,
-                el('button', { type: 'button', class: 'btn btn--small btn--ghost', onclick: () => addSubRow(null) }, '➕ Add a check')
+                addBtn
             ])
         ]);
+        let saving = false;
         const save = async () => {
+            if (saving) return;
             const t = title.value.trim();
-            if (!t) { toast('Type a name for the task.', 'error'); return; }
+            if (!t) { fieldError(title, 'Type a name for the task.'); return; }
             const daysOfWeek = maskFromSet(set);
-            if (!/[1]/.test(daysOfWeek)) { toast('Pick at least one day.', 'error'); return; }
+            if (!/[1]/.test(daysOfWeek)) {
+                dayErr.textContent = 'Pick at least one day.';
+                dayRow.querySelector('button').focus();
+                return;
+            }
             const body = { title: t, type: type.value, timeSlot: slot.value, timeOfDay: time.value(), daysOfWeek: daysOfWeek };
+            saving = true;
             try {
                 let mainId;
                 if (isEdit) {
@@ -1180,29 +1345,36 @@
                     body.childId = state.selectedChildId;
                     const res = await api('add_task', { method: 'POST', body: body });
                     mainId = res.id;
+                    // From here on this dialog edits the saved task, so a retry after
+                    // a follow-up error can't create a second copy.
+                    task = { id: mainId }; isEdit = true;
                 }
-                // Reconcile follow-up checks.
-                const ops = [];
-                subRows.forEach(r => {
+                // Reconcile follow-up checks one at a time, in order, so they keep
+                // the order the parent typed them in.
+                for (const r of subRows) {
                     const st = r.input.value.trim();
                     if (r.removed || st === '') {
-                        if (r.id) ops.push(api('remove_task', { method: 'POST', body: { id: r.id } }));
+                        if (r.id) { await api('remove_task', { method: 'POST', body: { id: r.id } }); r.id = null; }
                     } else if (r.id) {
-                        if (st !== r.orig) ops.push(api('update_subtask', { method: 'POST', body: { id: r.id, title: st } }));
+                        if (st !== r.orig) { await api('update_subtask', { method: 'POST', body: { id: r.id, title: st } }); r.orig = st; }
                     } else {
-                        ops.push(api('add_subtask', { method: 'POST', body: { parentId: mainId, title: st } }));
+                        const res = await api('add_subtask', { method: 'POST', body: { parentId: mainId, title: st } });
+                        r.id = res && res.id ? res.id : 'saved'; r.orig = st;
                     }
-                });
-                await Promise.all(ops);
-                toast(isEdit ? 'Saved.' : 'Added.', 'success');
-                closeModal(); render();
-            } catch (err) { toast(err.message, 'error'); }
+                }
+                const n = liveRows().filter(r => r.input.value.trim()).length;
+                toast('“' + t + '” saved' + (n ? ' with ' + n + ' follow-up check' + (n > 1 ? 's' : '') : '') + '.', 'success');
+                state._focusSel = '[data-fkey="edit-' + mainId + '"]';
+                closeModal(false); render();
+            } catch (err) {
+                toast(err.message + (isEdit && !task.title ? ' The task itself was saved; press Save to try the follow-up checks again.' : ''), 'error');
+            } finally { saving = false; }
         };
         const actions = el('div', { class: 'modal__actions' }, [
             el('button', { class: 'btn btn--ghost', onclick: closeModal }, 'Cancel'),
             el('button', { class: 'btn', onclick: save }, isEdit ? 'Save' : 'Add')
         ]);
-        openModal(isEdit ? 'Edit task' : 'Add chore or activity', content, actions);
+        openModal(isEdit ? 'Edit task' : 'Add chore or activity', content, actions, { describe: false });
     }
 
     // ---------- Daily Report tab ----------
@@ -1216,10 +1388,10 @@
             return card;
         }
 
-        const dateInput = el('input', { type: 'date', value: state._reportDay || state.today, max: state.today, 'aria-label': 'Report date' });
+        const dateInput = el('input', { type: 'date', id: 'report-date', value: state._reportDay || state.today, max: state.today });
         card.appendChild(el('div', { class: 'row' }, [
-            el('div', { class: 'field' }, [el('label', { text: 'Child' }), childSelect(() => render())]),
-            el('div', { class: 'field' }, [el('label', { text: 'Date' }), dateInput])
+            el('div', { class: 'field' }, [el('label', { for: 'child-select', text: 'Child' }), childSelect(() => render())]),
+            el('div', { class: 'field' }, [el('label', { for: 'report-date', text: 'Date' }), dateInput])
         ]));
         dateInput.addEventListener('change', () => { state._reportDay = dateInput.value; render(); });
 
@@ -1231,8 +1403,8 @@
 
         // Day snapshot
         card.appendChild(el('div', { class: 'stat-grid' }, [
-            stat(sum.counts.done + '/' + sum.counts.total, 'Tasks done'),
-            stat(sum.counts.percent + '%', 'Completion'),
+            stat(sum.counts.done + '/' + sum.counts.total, 'Tasks fully done'),
+            stat(sum.counts.percent + '%', 'Of all checks done'),
             stat(sum.counts.chores.done + '/' + sum.counts.chores.total, 'Chores'),
             stat(sum.counts.activities.done + '/' + sum.counts.activities.total, 'Activities'),
         ]));
@@ -1242,9 +1414,10 @@
 
         // Mood picker
         let chosenMood = r.mood || '';
-        const moodRow = el('div', { class: 'choice-row' });
+        const moodRow = el('div', { class: 'choice-row', role: 'group', 'aria-labelledby': 'mood-lbl' });
         MOODS.forEach(m => {
-            const b = el('button', { type: 'button', class: 'choice', 'aria-pressed': m.v === chosenMood ? 'true' : 'false', text: m.label });
+            const b = el('button', { type: 'button', class: 'choice', 'aria-pressed': m.v === chosenMood ? 'true' : 'false' },
+                [el('span', { 'aria-hidden': 'true', text: m.label.split(' ')[0] + ' ' }), m.label.split(' ').slice(1).join(' ')]);
             b.addEventListener('click', () => {
                 chosenMood = (chosenMood === m.v) ? '' : m.v;
                 moodRow.querySelectorAll('.choice').forEach(x => x.setAttribute('aria-pressed', 'false'));
@@ -1255,9 +1428,10 @@
 
         // Behavior rating 1-5
         let chosenRating = r.behaviorRating || 0;
-        const ratingRow = el('div', { class: 'choice-row' });
+        const ratingRow = el('div', { class: 'choice-row', role: 'group', 'aria-labelledby': 'rating-lbl' });
         for (let i = 1; i <= 5; i++) {
-            const b = el('button', { type: 'button', class: 'choice', 'aria-pressed': i === chosenRating ? 'true' : 'false', 'aria-label': i + ' out of 5', text: String(i) });
+            const b = el('button', { type: 'button', class: 'choice', 'aria-pressed': i === chosenRating ? 'true' : 'false' },
+                [String(i), el('span', { class: 'sr-only', text: ' out of 5' })]);
             b.addEventListener('click', () => {
                 chosenRating = (chosenRating === i) ? 0 : i;
                 ratingRow.querySelectorAll('.choice').forEach(x => x.setAttribute('aria-pressed', 'false'));
@@ -1266,10 +1440,21 @@
             ratingRow.appendChild(b);
         }
 
-        const highlights = el('textarea', { 'aria-label': 'Highlights / wins' }, r.highlights || '');
-        const challenges = el('textarea', { 'aria-label': 'Challenges' }, r.challenges || '');
-        const notes = el('textarea', { 'aria-label': 'General notes' }, r.notes || '');
-        const goals = el('textarea', { 'aria-label': 'Goals for tomorrow' }, r.goals || '');
+        // Unsaved text is kept per child and day, so a re-render or the parent
+        // lock doesn't throw it away.
+        const draftKey = 'chore_report_draft:' + childId + ':' + day;
+        let draft = {};
+        try { draft = JSON.parse(sessionStorage.getItem(draftKey) || '{}'); } catch (e) { draft = {}; }
+        const pick = (k) => (draft[k] !== undefined ? draft[k] : (r[k] || ''));
+        const highlights = el('textarea', { id: 'rep-highlights' }, pick('highlights'));
+        const challenges = el('textarea', { id: 'rep-challenges' }, pick('challenges'));
+        const notes = el('textarea', { id: 'rep-notes' }, pick('notes'));
+        const goals = el('textarea', { id: 'rep-goals' }, pick('goals'));
+        const keepDraft = () => {
+            try { sessionStorage.setItem(draftKey, JSON.stringify({ highlights: highlights.value, challenges: challenges.value, notes: notes.value, goals: goals.value })); } catch (e) { /* ignore */ }
+        };
+        [highlights, challenges, notes, goals].forEach(t => t.addEventListener('input', keepDraft));
+        if (Object.keys(draft).length) card.appendChild(el('p', { class: 'help', role: 'status', text: 'Your unsaved notes for this day were kept.' }));
 
         const save = async () => {
             try {
@@ -1278,18 +1463,19 @@
                     highlights: highlights.value, challenges: challenges.value,
                     notes: notes.value, goals: goals.value
                 } });
+                try { sessionStorage.removeItem(draftKey); } catch (e) { /* ignore */ }
                 toast('Report saved.', 'success');
             } catch (err) { toast(err.message, 'error'); }
         };
 
-        card.appendChild(el('div', { class: 'field' }, [el('label', { text: 'Mood' }), moodRow]));
-        card.appendChild(el('div', { class: 'field' }, [el('label', { text: 'Behavior rating (1 = tough day, 5 = great day)' }), ratingRow]));
-        card.appendChild(el('div', { class: 'field' }, [el('label', { text: 'Highlights / wins' }), highlights]));
-        card.appendChild(el('div', { class: 'field' }, [el('label', { text: 'Challenges' }), challenges]));
-        card.appendChild(el('div', { class: 'field' }, [el('label', { text: 'General notes' }), notes]));
-        card.appendChild(el('div', { class: 'field' }, [el('label', { text: 'Goals for tomorrow' }), goals]));
+        card.appendChild(el('div', { class: 'field' }, [el('span', { class: 'label', id: 'mood-lbl', text: 'Mood' }), moodRow]));
+        card.appendChild(el('div', { class: 'field' }, [el('span', { class: 'label', id: 'rating-lbl', text: 'Behavior rating (1 = tough day, 5 = great day)' }), ratingRow]));
+        card.appendChild(el('div', { class: 'field' }, [el('label', { for: 'rep-highlights', text: 'Highlights / wins' }), highlights]));
+        card.appendChild(el('div', { class: 'field' }, [el('label', { for: 'rep-challenges', text: 'Challenges' }), challenges]));
+        card.appendChild(el('div', { class: 'field' }, [el('label', { for: 'rep-notes', text: 'General notes' }), notes]));
+        card.appendChild(el('div', { class: 'field' }, [el('label', { for: 'rep-goals', text: 'Goals for tomorrow' }), goals]));
         card.appendChild(el('div', { class: 'modal__actions' }, [
-            el('button', { class: 'btn btn--good', onclick: save }, '💾 Save report')
+            el('button', { class: 'btn btn--good', onclick: save }, [el('span', { 'aria-hidden': 'true', text: '💾 ' }), 'Save report'])
         ]));
         if (r.updatedAt) card.appendChild(el('p', { class: 'help', text: 'Last saved: ' + r.updatedAt }));
         return card;
@@ -1298,7 +1484,7 @@
     // Schedule editor: the day's scheduled tasks with per-day time/skip controls.
     async function scheduleEditor(childId, day) {
         const wrap = el('div', { class: 'field' });
-        wrap.appendChild(el('label', { text: 'Today’s schedule' }));
+        wrap.appendChild(el('h3', { class: 'label', text: 'Schedule for this day' }));
         wrap.appendChild(el('p', { class: 'help', text: 'Adjust just this day’s time, or skip a task — the recurring schedule is unchanged.' }));
         let data;
         try { data = await api('day_schedule', { params: { childId: childId, day: day } }); }
@@ -1311,24 +1497,27 @@
         const list = el('ul', { class: 'list' });
         data.tasks.forEach(t => {
             const si = slotInfo(t.effectiveSlot);
-            const when = si.emoji + ' ' + si.label + (t.effectiveTime ? ' · ' + fmtTime(t.effectiveTime) : '');
+            const when = si.label + (t.effectiveTime ? ', ' + fmtTime(t.effectiveTime) : '')
+                + (t.subtaskCount ? ' · ' + t.subtaskCount + ' follow-up check' + (t.subtaskCount > 1 ? 's' : '') : '');
             const changed = t.overrideSlot || t.overrideTime;
             list.appendChild(el('li', { class: 'list-item' + (t.skipped ? ' is-skipped' : '') }, [
                 el('span', { class: 'pill-emoji', style: 'background:' + (t.type === 'activity' ? '#f2b705' : '#5b8def'), 'aria-hidden': 'true', text: t.emoji }),
                 el('div', { class: 'grow' }, [
                     el('div', {}, [
-                        el('span', { class: 'name', text: t.title }),
-                        t.skipped ? el('span', { class: 'tag tag--inactive', text: 'Skipped today' }) : null,
+                        el('span', { class: 'name', text: t.title }), ' ',
+                        el('span', { class: 'tag tag--' + t.type, text: t.type === 'activity' ? 'Activity' : 'Chore' }), ' ',
+                        t.skipped ? el('span', { class: 'tag tag--inactive', text: 'Skipped this day' }) : null,
                         (!t.skipped && changed) ? el('span', { class: 'tag tag--activity', text: 'Adjusted' }) : null
                     ]),
-                    el('div', { class: 'meta', text: t.skipped ? 'Not shown on the board today' : when })
+                    el('div', { class: 'meta', text: t.skipped ? 'Not shown on the board this day' + (t.subtaskCount ? ', with its follow-up checks' : '') : when })
                 ]),
                 el('div', { class: 'actions' }, [
-                    el('button', { class: 'btn btn--small btn--ghost', onclick: () => openOverrideForm(t, day) }, 'Adjust'),
+                    el('button', { class: 'btn btn--small btn--ghost', 'data-fkey': 'adj-' + t.id, 'aria-label': 'Adjust ' + t.title, onclick: () => openOverrideForm(t, day) }, 'Adjust'),
                     el('button', {
                         class: 'btn btn--small ' + (t.skipped ? 'btn--good' : 'btn--ghost'),
+                        'data-fkey': 'skip-' + t.id, 'aria-label': (t.skipped ? 'Restore ' : 'Skip this day: ') + t.title,
                         onclick: () => toggleSkip(t, day)
-                    }, t.skipped ? 'Restore' : 'Skip today')
+                    }, t.skipped ? 'Restore' : 'Skip this day')
                 ])
             ]));
         });
@@ -1343,29 +1532,30 @@
                 timeSlot: task.overrideSlot || '', timeOfDay: task.overrideTime || '',
                 skipped: task.skipped ? '0' : '1'
             } });
-            toast(task.skipped ? 'Restored for this day.' : 'Skipped for this day.', 'success');
+            toast(task.title + (task.skipped ? ' restored for this day.' : ' skipped for this day.'), 'success');
+            state._focusSel = '[data-fkey="skip-' + task.id + '"]';
             render();
         } catch (err) { toast(err.message, 'error'); }
     }
 
     function openOverrideForm(task, day) {
-        const slot = el('select', { 'aria-label': 'Time of day for this day' },
-            [el('option', { value: '' }, '— Use usual (' + slotInfo(task.defaultSlot).label + ') —')]
-                .concat(SLOTS.map(s => el('option', { value: s.v }, s.emoji + ' ' + s.label))));
+        const slot = el('select', { id: 'ov-slot' },
+            [el('option', { value: '' }, 'Usual (' + slotInfo(task.defaultSlot).label + ')')]
+                .concat(SLOTS.map(s => el('option', { value: s.v }, s.label))));
         slot.value = task.overrideSlot || '';
         const time = timeField(task.overrideTime || '');
         const content = el('div', {}, [
             el('p', { class: 'help', text: 'Changes apply to ' + fmtDate(day) + ' only. Leave blank to use the usual schedule.' }),
             el('div', { class: 'row' }, [
-                el('div', { class: 'field' }, [el('label', { text: 'Time of day' }), slot]),
-                el('div', { class: 'field' }, [el('label', { text: 'Specific time' }), time.node])
+                el('div', { class: 'field' }, [el('label', { for: 'ov-slot', text: 'Time of day' }), slot]),
+                el('div', { class: 'field' }, [el('span', { class: 'label', text: 'Specific time' }), time.node])
             ])
         ]);
         const actions = el('div', { class: 'modal__actions' }, [
             el('button', { class: 'btn btn--ghost', onclick: closeModal }, 'Cancel'),
             (task.overrideSlot || task.overrideTime) ? el('button', { class: 'btn btn--ghost', onclick: async () => {
                 try { await api('set_override', { method: 'POST', body: { taskId: task.id, day: day, timeSlot: '', timeOfDay: '', skipped: task.skipped ? '1' : '0' } });
-                    toast('Reset to usual.', 'success'); closeModal(); render();
+                    toast(task.title + ' reset to its usual time.', 'success'); closeModal(); render();
                 } catch (err) { toast(err.message, 'error'); }
             } }, 'Reset to usual') : null,
             el('button', { class: 'btn', onclick: async () => {
@@ -1373,7 +1563,7 @@
                     taskId: task.id, day: day, timeSlot: slot.value, timeOfDay: time.value(),
                     skipped: task.skipped ? '1' : '0'
                 } });
-                    toast('Saved for this day.', 'success'); closeModal(); render();
+                    toast(task.title + ' changed for this day.', 'success'); closeModal(); render();
                 } catch (err) { toast(err.message, 'error'); }
             } }, 'Save for this day')
         ]);
@@ -1391,22 +1581,24 @@
             return el('div', {}, [card]);
         }
 
-        const fromInput = el('input', { type: 'date', value: state._from || daysAgoStr(6), max: state.today, 'aria-label': 'From date' });
-        const toInput = el('input', { type: 'date', value: state._to || state.today, max: state.today, 'aria-label': 'To date' });
+        const fromInput = el('input', { type: 'date', id: 'bhis-from', value: state._from || daysAgoStr(6), max: state.today });
+        const toInput = el('input', { type: 'date', id: 'bhis-to', value: state._to || state.today, max: state.today });
 
         card.appendChild(el('div', { class: 'row' }, [
-            el('div', { class: 'field' }, [el('label', { text: 'Child' }), childSelect()]),
-            el('div', { class: 'field' }, [el('label', { text: 'From' }), fromInput]),
-            el('div', { class: 'field' }, [el('label', { text: 'To' }), toInput]),
+            el('div', { class: 'field' }, [el('label', { for: 'child-select', text: 'Child' }), childSelect()]),
+            el('div', { class: 'field' }, [el('label', { for: 'bhis-from', text: 'From' }), fromInput]),
+            el('div', { class: 'field' }, [el('label', { for: 'bhis-to', text: 'To' }), toInput]),
         ]));
         card.appendChild(el('div', { class: 'modal__actions' }, [
             el('button', { class: 'btn', onclick: async () => {
                 state._from = fromInput.value; state._to = toInput.value;
                 try {
                     state.bhis = await api('bhis', { params: { childId: state.selectedChildId, from: state._from, to: state._to } });
+                    state._focusSel = '#bhis-sheet h2';
+                    announce('Report ready.');
                     render();
                 } catch (err) { toast(err.message, 'error'); }
-            } }, '📊 Generate report')
+            } }, [el('span', { 'aria-hidden': 'true', text: '📊 ' }), 'Generate report'])
         ]));
 
         const out = el('div');
@@ -1443,17 +1635,18 @@
         // Daily completion table
         sheet.appendChild(el('h3', { text: 'Daily completion' }));
         const tbl = el('table');
-        tbl.appendChild(el('tr', {}, [
-            el('th', { text: 'Date' }), el('th', { text: 'Done / scheduled' }),
-            el('th', { text: 'Completion' }), el('th', { text: '' })
-        ]));
+        tbl.appendChild(el('caption', { class: 'sr-only', text: 'Daily completion' }));
+        tbl.appendChild(el('thead', {}, [el('tr', {}, [
+            el('th', { scope: 'col', text: 'Date' }), el('th', { scope: 'col', text: 'Done / scheduled' }),
+            el('th', { scope: 'col', text: 'Completion' }), el('td', { 'aria-hidden': 'true' })
+        ])]));
         rep.daily.forEach(d => {
             const sched = (d.scheduled === undefined ? '' : ' / ' + d.scheduled);
             tbl.appendChild(el('tr', {}, [
                 el('td', { text: fmtDateShort(d.day) }),
                 el('td', { text: d.completed + sched }),
                 el('td', { text: d.percent + '%' }),
-                el('td', {}, [el('span', { class: 'bar-mini', style: 'width:' + Math.max(2, d.percent) + 'px' })])
+                el('td', { 'aria-hidden': 'true' }, [el('span', { class: 'bar-mini', style: 'width:' + Math.max(2, d.percent) + 'px' })])
             ]));
         });
         sheet.appendChild(tbl);
@@ -1462,7 +1655,8 @@
         if (rep.taskFreq && rep.taskFreq.length) {
             sheet.appendChild(el('h3', { text: 'How often each task was checked off' }));
             const t2 = el('table');
-            t2.appendChild(el('tr', {}, [el('th', { text: 'Task' }), el('th', { text: 'Type' }), el('th', { text: 'Times checked off' })]));
+            t2.appendChild(el('caption', { class: 'sr-only', text: 'How often each task was checked off' }));
+            t2.appendChild(el('thead', {}, [el('tr', {}, [el('th', { scope: 'col', text: 'Task' }), el('th', { scope: 'col', text: 'Type' }), el('th', { scope: 'col', text: 'Times main box checked' })])]));
             rep.taskFreq.forEach(t => {
                 t2.appendChild(el('tr', {}, [
                     el('td', { text: t.title }),
@@ -1663,7 +1857,7 @@
         if (Notification.permission === 'denied') return null;
         const st = await pushDeviceState();
         if (st.childId === state.child.id) return null; // already on
-        const btn = el('button', { class: 'btn', type: 'button' }, '🔔 Remind me when it’s time');
+        const btn = el('button', { class: 'btn', type: 'button' }, [el('span', { 'aria-hidden': 'true', text: '🔔 ' }), 'Remind me when it’s time']);
         const card = el('div', { class: 'card', style: 'margin-top:20px' }, [
             el('h3', { text: 'Chore reminders' }),
             el('p', { class: 'muted', text: 'Get a reminder on this device when each chore is due.' }),
@@ -1673,8 +1867,13 @@
             try {
                 const sub = await ensureSubscription();
                 await pushRegister(sub, { childId: state.child.id });
-                card.replaceWith(el('p', { class: 'muted', role: 'status', style: 'margin-top:20px; text-align:center', text: '🔔 Reminders are on for ' + state.child.firstName + ' on this device.' }));
-                toast('Reminders are on.', 'success');
+                // Replace the card, then move focus to the new message so focus isn't
+                // lost with the removed button.
+                const done = el('p', { class: 'muted', tabindex: '-1', style: 'margin-top:20px; text-align:center' },
+                    [el('span', { 'aria-hidden': 'true', text: '🔔 ' }), 'Reminders are on for ' + state.child.firstName + ' on this device.']);
+                card.replaceWith(done);
+                done.focus();
+                announce('Reminders are on.');
             } catch (err) { toast(err.message, 'error'); }
         });
         return card;
@@ -1727,31 +1926,32 @@
 
     // ---------- Change PIN ----------
     function openChangePin() {
-        const cur = el('input', { type: 'password', inputmode: 'numeric', 'aria-label': 'Current PIN' });
-        const nw = el('input', { type: 'password', inputmode: 'numeric', 'aria-label': 'New PIN' });
+        const cur = el('input', { type: 'password', id: 'cp-cur', inputmode: 'numeric', autocomplete: 'current-password' });
+        const nw = el('input', { type: 'password', id: 'cp-new', inputmode: 'numeric', autocomplete: 'new-password' });
         const content = el('div', {}, [
-            el('div', { class: 'field' }, [el('label', { text: 'Current PIN' }), cur]),
-            el('div', { class: 'field' }, [el('label', { text: 'New PIN (4–8 digits)' }), nw]),
+            el('div', { class: 'field' }, [el('label', { for: 'cp-cur', text: 'Current PIN' }), cur]),
+            el('div', { class: 'field' }, [el('label', { for: 'cp-new', text: 'New PIN (4–8 digits)' }), nw]),
         ]);
         const actions = el('div', { class: 'modal__actions' }, [
             el('button', { class: 'btn btn--ghost', onclick: closeModal }, 'Cancel'),
             el('button', { class: 'btn', onclick: async () => {
-                if (!/^\d{4,8}$/.test(nw.value)) { toast('New PIN must be 4–8 digits.', 'error'); return; }
+                if (!/^\d{4,8}$/.test(nw.value)) { fieldError(nw, 'New PIN must be 4–8 digits.'); return; }
                 try {
                     await api('change_pin', { method: 'POST', body: { current: cur.value, pin: nw.value } });
                     toast('PIN changed.', 'success'); closeModal();
-                } catch (err) { toast(err.message, 'error'); }
+                } catch (err) { if (err.code === 'bad_pin') fieldError(cur, err.message); else toast(err.message, 'error'); }
             } }, 'Change PIN')
         ]);
-        openModal('Change parent PIN', content, actions);
+        openModal('Change parent PIN', content, actions, { describe: false });
     }
 
     // ---------- Delete family (account deletion) ----------
     function openDeleteFamily() {
-        const pin = el('input', { type: 'password', inputmode: 'numeric', 'aria-label': 'Parent PIN' });
+        const pin = el('input', { type: 'password', id: 'df-pin', inputmode: 'numeric', autocomplete: 'current-password' });
+        const warn = el('p', { id: 'df-warn', text: 'This permanently deletes your family, every child, all tasks, history and reports, on every device. It cannot be undone.' });
         const content = el('div', {}, [
-            el('p', { text: 'This permanently deletes your family, every child, all tasks, history and reports, on every device. It cannot be undone.' }),
-            el('div', { class: 'field' }, [el('label', { text: 'Enter your parent PIN to confirm' }), pin]),
+            warn,
+            el('div', { class: 'field' }, [el('label', { for: 'df-pin', text: 'Enter your parent PIN to confirm' }), pin]),
         ]);
         const actions = el('div', { class: 'modal__actions' }, [
             el('button', { class: 'btn btn--ghost', onclick: closeModal }, 'Cancel'),
@@ -1761,10 +1961,12 @@
                     closeModal();
                     switchFamily();
                     toast('Your family and all its data were deleted.', 'success');
-                } catch (err) { toast(err.message, 'error'); }
+                } catch (err) { if (err.code === 'bad_pin') fieldError(pin, err.message); else toast(err.message, 'error'); }
             } }, 'Delete everything')
         ]);
         openModal('Delete family', content, actions);
+        // Read the warning with the dialog, not just the first button.
+        $('.modal').setAttribute('aria-describedby', 'df-warn');
     }
 
     // ==================================================================
@@ -1800,16 +2002,47 @@
         render();
     }
 
-    // Any tap or key press counts as parent activity.
-    ['pointerdown', 'keydown', 'touchstart'].forEach((ev) =>
-        document.addEventListener(ev, markParentActivity, { passive: true, capture: true }));
-    function checkParentIdle() {
-        if (!getToken() || state.view !== 'parent') return;
-        if (Date.now() - parentLastActive < PARENT_IDLE_MS) return;
-        parentLogout('kid').then(() =>
-            toast('The parent area locked after 10 minutes without use. Enter the PIN to go back in.'));
+    // Any tap, key press, focus move, typing or scroll counts as parent activity.
+    // focusin catches screen-reader and switch users, whose browse-mode keys and
+    // activations may never reach the page as key presses.
+    ['pointerdown', 'keydown', 'touchstart', 'focusin', 'input', 'scroll', 'wheel'].forEach((ev) =>
+        document.addEventListener(ev, (e) => {
+            // Moving focus into the warning itself isn't activity; pressing its button is.
+            if (idleWarnEl && e.target && e.target.nodeType === 1 && idleWarnEl.contains(e.target)) return;
+            markParentActivity();
+            if (idleWarnEl) hideIdleWarning();
+        }, { passive: true, capture: true }));
+
+    // A minute before the lock, warn and offer to stay signed in (WCAG 2.2.1).
+    const IDLE_WARN_MS = 60 * 1000;
+    let idleWarnEl = null;
+    function hideIdleWarning() {
+        if (!idleWarnEl) return;
+        idleWarnEl.remove(); idleWarnEl = null;
     }
-    setInterval(checkParentIdle, 30 * 1000);
+    function showIdleWarning() {
+        if (idleWarnEl) return;
+        const stay = el('button', { class: 'btn', type: 'button', onclick: () => { markParentActivity(); hideIdleWarning(); announce('You are still signed in.'); } }, 'Stay signed in');
+        // Outside the page and any dialog, so it works even while a dialog is open.
+        idleWarnEl = el('div', { class: 'idle-warning', role: 'alertdialog', 'aria-modal': 'false', 'aria-labelledby': 'idle-title', 'aria-describedby': 'idle-desc' }, [
+            el('h2', { id: 'idle-title', text: 'Still there?' }),
+            el('p', { id: 'idle-desc', text: 'The parent area locks in 1 minute to keep it private from kids. Anything you have typed in the daily report is kept.' }),
+            stay
+        ]);
+        document.body.appendChild(idleWarnEl);
+        stay.focus();
+    }
+    function checkParentIdle() {
+        if (!getToken() || state.view !== 'parent') { hideIdleWarning(); return; }
+        const idle = Date.now() - parentLastActive;
+        if (idle >= PARENT_IDLE_MS) {
+            parentLogout('parent').then(() =>
+                toast('The parent area locked after 10 minutes without use. Enter the PIN to go back in.'));
+            return;
+        }
+        if (idle >= PARENT_IDLE_MS - IDLE_WARN_MS) showIdleWarning();
+    }
+    setInterval(checkParentIdle, 10 * 1000);
     // Coming back to the app after a while also locks it right away.
     document.addEventListener('visibilitychange', () => { if (!document.hidden) checkParentIdle(); });
 

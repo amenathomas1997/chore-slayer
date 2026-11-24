@@ -64,8 +64,11 @@ class Api(private val session: Session) {
     suspend fun daySummary(childId: String, day: String? = null) =
         DaySummary.from(get("day_summary", buildMap { put("childId", childId); day?.let { put("day", it) } }))
 
-    suspend fun toggleCompletion(childId: String, taskId: String) =
-        post("toggle_completion", mapOf("childId" to childId, "taskId" to taskId)).optBoolean("completed")
+    /** Returns (now completed, number of follow-up checks the server cleared on uncheck). */
+    suspend fun toggleCompletion(childId: String, taskId: String): Pair<Boolean, Int> {
+        val j = post("toggle_completion", mapOf("childId" to childId, "taskId" to taskId))
+        return j.optBoolean("completed") to j.optInt("clearedFollowUps", 0)
+    }
 
     // Parent — children
     suspend fun addChild(firstName: String, lastName: String, color: String, emoji: String) {
@@ -82,9 +85,10 @@ class Api(private val session: Session) {
         val a = get("tasks", mapOf("childId" to childId)).optJSONArray("tasks") ?: return emptyList()
         return (0 until a.length()).map { ParentTask.from(a.getJSONObject(it)) }
     }
-    suspend fun addTask(childId: String, title: String, type: String, emoji: String, daysOfWeek: String, timeSlot: String, timeOfDay: String) {
-        post("add_task", mapOf("childId" to childId, "title" to title, "type" to type, "emoji" to emoji,
-            "daysOfWeek" to daysOfWeek, "timeSlot" to timeSlot, "timeOfDay" to timeOfDay))
+    /** Returns the new task's id (empty if an older server didn't send one). */
+    suspend fun addTask(childId: String, title: String, type: String, emoji: String, daysOfWeek: String, timeSlot: String, timeOfDay: String): String {
+        return post("add_task", mapOf("childId" to childId, "title" to title, "type" to type, "emoji" to emoji,
+            "daysOfWeek" to daysOfWeek, "timeSlot" to timeSlot, "timeOfDay" to timeOfDay)).optString("id")
     }
     suspend fun updateTask(id: String, title: String, type: String, emoji: String, daysOfWeek: String, timeSlot: String, timeOfDay: String) {
         post("update_task", mapOf("id" to id, "title" to title, "type" to type, "emoji" to emoji,

@@ -66,7 +66,13 @@ body {
 :focus-visible {
     outline: 3px solid var(--focus);
     outline-offset: 2px;
-    border-radius: 6px;
+}
+/* On the blue header the normal ring is nearly invisible (1.1:1), so use white
+   with a dark halo there (white on brand 7.4:1). */
+.app-header :focus-visible, .skip-link:focus-visible {
+    outline: 3px solid #fff;
+    outline-offset: 2px;
+    box-shadow: 0 0 0 6px #16243a;
 }
 
 /* ---- Header / footer ---- */
@@ -79,13 +85,14 @@ body {
     max-width: 1000px;
     margin: 0 auto;
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 12px;
     padding: 14px 18px;
 }
 .app-logo { width: 34px; height: 34px; border-radius: 8px; display: block; flex: none; }
 .app-title { font-size: 1.25rem; margin: 0; font-weight: 700; }
-.app-header__actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.app-header__actions { margin-left: auto; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 
 .app-footer {
     margin-top: auto;
@@ -299,7 +306,9 @@ textarea { min-height: 90px; resize: vertical; }
 
 /* generic flex-grow cell + skipped schedule rows */
 .grow { flex: 1; min-width: 0; }
-.list-item.is-skipped { opacity: .6; }
+/* Skipped rows: shown with a dashed border, grey fill and strikethrough, never
+   by fading, so every word and button keeps full contrast. */
+.list-item.is-skipped { border-style: dashed; background: #f1f3f6; }
 .list-item.is-skipped .name { text-decoration: line-through; }
 
 /* ---- Task wrapper + follow-up checks (sub-steps) ---- */
@@ -328,10 +337,11 @@ textarea { min-height: 90px; resize: vertical; }
 .subcheck[aria-pressed="true"] .subcheck__box { background: var(--good); border-color: var(--good); color: #fff; }
 .subcheck[aria-pressed="true"] span:last-child { text-decoration: line-through; color: var(--ink-soft); }
 
-/* ---- "My Day" follow-up sub-items ---- */
+/* ---- "My Day" follow-up sub-items (nested list inside their task) ---- */
+.summary-sublist { flex-basis: 100%; list-style: none; margin: 4px 0 0 22px; padding: 0; display: grid; gap: 8px; }
 .summary-subitem {
     display: flex; align-items: center; gap: 12px;
-    padding: 8px 14px 8px 34px; border-radius: 10px;
+    padding: 8px 14px; border-radius: 10px;
     border: 1px dashed var(--border); background: var(--surface);
     font-size: .95rem;
 }
@@ -366,7 +376,7 @@ textarea { min-height: 90px; resize: vertical; }
 
 .summary-list { list-style: none; padding: 0; margin: 18px 0 0; display: grid; gap: 10px; }
 .summary-item {
-    display: flex; align-items: center; gap: 12px;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
     padding: 12px 14px; border-radius: 12px; border: 1px solid var(--border);
     background: var(--surface);
 }
@@ -417,7 +427,18 @@ textarea { min-height: 90px; resize: vertical; }
     border: 2px solid var(--control-border); background: #fff;
     border-radius: 10px; padding: 10px 14px; min-height: 46px;
 }
-.choice[aria-pressed="true"] { border-color: var(--brand); background: #eef3fa; font-weight: 700; }
+.choice[aria-pressed="true"] { border-color: var(--brand); background: #eef3fa; font-weight: 700;
+    box-shadow: inset 0 0 0 2px var(--brand); position: relative; }
+/* A check mark on selected choices, so selection isn't shown by colour alone. */
+.choice[aria-pressed="true"]::after {
+    content: "✓"; position: absolute; top: -9px; right: -9px;
+    width: 22px; height: 22px; border-radius: 50%;
+    background: var(--brand); color: #fff; font-size: 14px; line-height: 22px; text-align: center;
+    border: 2px solid #fff; font-weight: 800;
+}
+.label { display: block; font-weight: 600; margin-bottom: 6px; }
+.fieldset { border: 0; padding: 0; margin: 0 0 16px; min-width: 0; }
+.fieldset > legend { font-weight: 600; padding: 0; margin-bottom: 6px; }
 
 /* ---- Toast ---- */
 .toast {
@@ -483,3 +504,13 @@ hr.sep { border: none; border-top: 1px solid var(--border); margin: 22px 0; }
     .report-sheet, .card { box-shadow: none; border: none; }
     .report-day { background: #fff; }
 }
+
+/* ---- Idle-lock warning (parent area) ---- */
+.idle-warning {
+    position: fixed; left: 50%; top: 16px; transform: translateX(-50%);
+    z-index: 200; width: min(92vw, 420px);
+    background: #fff; color: var(--ink); border: 3px solid var(--brand);
+    border-radius: 14px; padding: 18px 20px; box-shadow: var(--shadow-lg);
+}
+.idle-warning h2 { margin: 0 0 6px; font-size: 1.2rem; }
+.idle-warning p { margin: 0 0 12px; }

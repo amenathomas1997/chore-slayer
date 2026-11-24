@@ -19,70 +19,49 @@ func shiftDate(_ ymd: String, by days: Int) -> String {
 
 struct DailyReportView: View {
     @ObservedObject var model: AppModel
-    @State private var mood = ""
-    @State private var rating: Int?
-    @State private var highlights = ""
-    @State private var challenges = ""
-    @State private var notes = ""
-    @State private var goals = ""
 
     private var bundle: ReportBundle? { model.reportBundle }
 
     var body: some View {
         if let bundle {
+            let c = bundle.summary.counts
             VStack(alignment: .leading, spacing: 12) {
-                Text("Daily report").font(.title2.bold()).accessibilityAddTraits(.isHeader)
+                Text("Daily report").font(.title2.bold()).screenHeading()
                 Text(bundle.day).font(.subheadline).foregroundStyle(Color.muted)
 
-                Text("Today: \(bundle.summary.counts.done)/\(bundle.summary.counts.total) tasks done · \(bundle.summary.counts.percent)%")
+                Text("Today: \(countsLine(c))")
                     .font(.headline)
                     .padding(12).frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color(.secondarySystemBackground)).clipShape(RoundedRectangle(cornerRadius: 12))
                     .accessibilityElement(children: .combine)
-                    .accessibilityLabel("Today: \(bundle.summary.counts.done) of \(bundle.summary.counts.total) tasks done, \(bundle.summary.counts.percent) percent")
+                    .accessibilityLabel("Today: \(countsSpoken(c))")
 
-                TextField("Mood", text: $mood).textFieldStyle(.roundedBorder).accessibilityLabel("Mood")
+                // Fields live in AppModel.reportDraft so the idle lock doesn't lose them.
+                TextField("Mood", text: $model.reportDraft.mood).textFieldStyle(.roundedBorder).accessibilityLabel("Mood")
 
                 sectionHeader("Behavior (1–5)")
                 HStack {
                     ForEach(1...5, id: \.self) { n in
-                        SelectChip(label: "\(n)", selected: rating == n, a11yLabel: "Rating \(n) of 5") {
-                            rating = (rating == n) ? nil : n
+                        SelectChip(label: "\(n)", selected: model.reportDraft.rating == n, a11yLabel: "Rating \(n) of 5") {
+                            model.reportDraft.rating = (model.reportDraft.rating == n) ? nil : n
+                            model.markParentActivity()
                         }
                     }
                 }
 
-                TextField("Highlights", text: $highlights, axis: .vertical).textFieldStyle(.roundedBorder).accessibilityLabel("Highlights")
-                TextField("Challenges", text: $challenges, axis: .vertical).textFieldStyle(.roundedBorder).accessibilityLabel("Challenges")
-                TextField("Notes", text: $notes, axis: .vertical).textFieldStyle(.roundedBorder).accessibilityLabel("Notes")
-                TextField("Goals", text: $goals, axis: .vertical).textFieldStyle(.roundedBorder).accessibilityLabel("Goals")
+                TextField("Highlights", text: $model.reportDraft.highlights, axis: .vertical).textFieldStyle(.roundedBorder).accessibilityLabel("Highlights")
+                TextField("Challenges", text: $model.reportDraft.challenges, axis: .vertical).textFieldStyle(.roundedBorder).accessibilityLabel("Challenges")
+                TextField("Notes", text: $model.reportDraft.notes, axis: .vertical).textFieldStyle(.roundedBorder).accessibilityLabel("Notes")
+                TextField("Goals", text: $model.reportDraft.goals, axis: .vertical).textFieldStyle(.roundedBorder).accessibilityLabel("Goals")
 
-                Button("Save report") {
-                    Task {
-                        await model.saveReport(
-                            mood: mood.trimmingCharacters(in: .whitespaces), rating: rating,
-                            highlights: highlights.trimmingCharacters(in: .whitespaces),
-                            challenges: challenges.trimmingCharacters(in: .whitespaces),
-                            notes: notes.trimmingCharacters(in: .whitespaces),
-                            goals: goals.trimmingCharacters(in: .whitespaces))
-                    }
-                }
-                .buttonStyle(.borderedProminent).frame(maxWidth: .infinity, minHeight: 48).disabled(model.busy)
+                Button("Save report") { Task { await model.saveReport() } }
+                    .primaryButton().frame(maxWidth: .infinity, minHeight: 48).disabled(model.busy)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .onAppear { load(bundle) }
+            .onChange(of: model.reportDraft) { _ in model.markParentActivity() }
         } else {
             Text("Loading…")
         }
-    }
-
-    private func load(_ b: ReportBundle) {
-        mood = b.report?.mood ?? ""
-        rating = b.report?.behaviorRating
-        highlights = b.report?.highlights ?? ""
-        challenges = b.report?.challenges ?? ""
-        notes = b.report?.notes ?? ""
-        goals = b.report?.goals ?? ""
     }
 }
 
@@ -96,23 +75,23 @@ struct BhisView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("BHIS report").font(.title2.bold()).accessibilityAddTraits(.isHeader)
+            Text("BHIS report").font(.title2.bold()).screenHeading()
             if let c = model.managedChild {
                 Text("for \(c.firstName) \(c.lastName)").font(.subheadline).foregroundStyle(Color.muted)
             }
 
-            HStack {
+            AdaptiveStack {
                 TextField("From (YYYY-MM-DD)", text: $from).textFieldStyle(.roundedBorder).accessibilityLabel("From date")
                 TextField("To", text: $to).textFieldStyle(.roundedBorder).accessibilityLabel("To date")
             }
-            HStack {
+            AdaptiveStack {
                 Button("Last 7 days") { if !model.today.isEmpty { from = shiftDate(model.today, by: -6); to = model.today } }
                 Button("Last 30 days") { if !model.today.isEmpty { from = shiftDate(model.today, by: -29); to = model.today } }
             }.font(.footnote)
             Button("Generate") {
                 Task { await model.generateBhis(from: from.trimmingCharacters(in: .whitespaces), to: to.trimmingCharacters(in: .whitespaces)) }
             }
-            .buttonStyle(.borderedProminent).frame(maxWidth: .infinity, minHeight: 48)
+            .primaryButton().frame(maxWidth: .infinity, minHeight: 48)
             .disabled(model.busy || from.isEmpty || to.isEmpty)
 
             if let r = model.bhisReport {

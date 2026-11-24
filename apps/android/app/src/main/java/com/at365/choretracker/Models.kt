@@ -61,11 +61,16 @@ data class DoneTotal(val total: Int, val done: Int) {
     }
 }
 
-data class Counts(val total: Int, val done: Int, val percent: Int, val chores: DoneTotal?, val activities: DoneTotal?) {
+data class Counts(
+    val total: Int, val done: Int, val percent: Int, val chores: DoneTotal?, val activities: DoneTotal?,
+    /** Follow-up checks only (not main tasks); null on older servers. */
+    val steps: DoneTotal? = null,
+) {
     companion object {
         fun from(j: JSONObject) = Counts(
             j.optInt("total"), j.optInt("done"), j.optInt("percent"),
-            DoneTotal.from(j.optJSONObject("chores")), DoneTotal.from(j.optJSONObject("activities")))
+            DoneTotal.from(j.optJSONObject("chores")), DoneTotal.from(j.optJSONObject("activities")),
+            DoneTotal.from(j.optJSONObject("steps")))
     }
 }
 

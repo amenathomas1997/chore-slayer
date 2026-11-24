@@ -8,6 +8,8 @@ import android.net.Uri
 import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -46,12 +48,13 @@ fun ConnectingScreen(m: AppModel) {
 }
 
 /** First run: create a new family, or link this device to an existing one. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ConnectDeviceScreen(m: AppModel) {
     var create by rememberSaveable { mutableStateOf(true) }
     Title("Welcome to Chore Slayer")
     Muted("Set up your family to get started.")
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         SelectChip("✨ Create a family", create, "Create a family") { create = true }
         SelectChip("🔗 Connect this device", !create, "Connect this device") { create = false }
     }

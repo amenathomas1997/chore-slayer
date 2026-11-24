@@ -1,4 +1,7 @@
-<resources>
-    <!-- A bare no-action-bar theme; Compose draws the UI and colors. -->
-    <style name="Theme.ChoreSlayer" parent="android:Theme.Material.Light.NoActionBar" />
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- A bare no-action-bar theme; Compose draws the UI and colors. The app is light-only,
+         so stop Android's force-dark from inverting it. -->
+    <style name="Theme.ChoreSlayer" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:forceDarkAllowed" tools:targetApi="q">false</item>
+    </style>
 </resources>

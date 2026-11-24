@@ -1,13 +1,13 @@
 package com.at365.choretracker
 
 import android.content.Intent
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -24,16 +24,21 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DailyReportScreen(m: AppModel) {
     val b = m.reportBundle ?: run { Muted("Loading…"); return }
     val r = b.report
-    var mood by rememberSaveable(b.day) { mutableStateOf(r?.mood ?: "") }
-    var rating by rememberSaveable(b.day) { mutableStateOf(r?.behaviorRating) }
-    var highlights by rememberSaveable(b.day) { mutableStateOf(r?.highlights ?: "") }
-    var challenges by rememberSaveable(b.day) { mutableStateOf(r?.challenges ?: "") }
-    var notes by rememberSaveable(b.day) { mutableStateOf(r?.notes ?: "") }
-    var goals by rememberSaveable(b.day) { mutableStateOf(r?.goals ?: "") }
+    val childId = m.managedChild?.id ?: b.summary.childId
+    // Text not yet saved survives the idle lock: it's kept in the model as a draft.
+    val d = m.reportDraft?.takeIf { it.childId == childId && it.day == b.day }
+    var mood by rememberSaveable(b.day) { mutableStateOf(d?.mood ?: r?.mood ?: "") }
+    var rating by rememberSaveable(b.day) { mutableStateOf(if (d != null) d.rating else r?.behaviorRating) }
+    var highlights by rememberSaveable(b.day) { mutableStateOf(d?.highlights ?: r?.highlights ?: "") }
+    var challenges by rememberSaveable(b.day) { mutableStateOf(d?.challenges ?: r?.challenges ?: "") }
+    var notes by rememberSaveable(b.day) { mutableStateOf(d?.notes ?: r?.notes ?: "") }
+    var goals by rememberSaveable(b.day) { mutableStateOf(d?.goals ?: r?.goals ?: "") }
+    val keep = { m.reportDraft = ReportDraft(childId, b.day, mood, rating, highlights, challenges, notes, goals) }
     val c = b.summary.counts
 
     Title("Daily report")
@@ -41,22 +46,24 @@ fun DailyReportScreen(m: AppModel) {
     Card(Modifier.semantics(mergeDescendants = true) { contentDescription = "Today: ${c.done} of ${c.total} tasks done, ${c.percent} percent" }) {
         Text("Today: ${c.done}/${c.total} tasks done · ${c.percent}%", style = MaterialTheme.typography.titleMedium)
     }
-    Field(mood, { mood = it }, "Mood")
+    Field(mood, { mood = it; keep() }, "Mood")
     SectionHeader("Behavior (1–5)")
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        (1..5).forEach { n -> SelectChip("$n", rating == n, "Rating $n of 5") { rating = if (rating == n) null else n } }
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        (1..5).forEach { n -> SelectChip("$n", rating == n, "Rating $n of 5") { rating = if (rating == n) null else n; keep() } }
     }
-    Field(highlights, { highlights = it }, "Highlights", singleLine = false)
-    Field(challenges, { challenges = it }, "Challenges", singleLine = false)
-    Field(notes, { notes = it }, "Notes", singleLine = false)
-    Field(goals, { goals = it }, "Goals", singleLine = false)
+    Field(highlights, { highlights = it; keep() }, "Highlights", singleLine = false)
+    Field(challenges, { challenges = it; keep() }, "Challenges", singleLine = false)
+    Field(notes, { notes = it; keep() }, "Notes", singleLine = false)
+    Field(goals, { goals = it; keep() }, "Goals", singleLine = false)
     PrimaryButton("Save report", enabled = !m.busy) {
         m.saveReport(mood.trim(), rating, highlights.trim(), challenges.trim(), notes.trim(), goals.trim())
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun BhisScreen(m: AppModel) {
+    val active = LocalUserActivity.current
     val ctx = LocalContext.current
     var from by rememberSaveable { mutableStateOf(if (m.today.isEmpty()) "" else shiftDate(m.today, -6)) }
     var to by rememberSaveable { mutableStateOf(m.today) }
@@ -64,11 +71,10 @@ fun BhisScreen(m: AppModel) {
 
     Title("BHIS report")
     m.managedChild?.let { Muted("for ${it.firstName} ${it.lastName}") }
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedTextField(from, { from = it }, label = { Text("From (YYYY-MM-DD)") }, singleLine = true, modifier = Modifier.weight(1f))
-        OutlinedTextField(to, { to = it }, label = { Text("To") }, singleLine = true, modifier = Modifier.weight(1f))
-    }
-    Row {
+    // Stacked, so both fields stay usable at large text sizes.
+    OutlinedTextField(from, { active(); from = it }, label = { Text("From (YYYY-MM-DD)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+    OutlinedTextField(to, { active(); to = it }, label = { Text("To (YYYY-MM-DD)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+    FlowRow {
         LinkButton("Last 7 days") { if (m.today.isNotEmpty()) { from = shiftDate(m.today, -6); to = m.today } }
         LinkButton("Last 30 days") { if (m.today.isNotEmpty()) { from = shiftDate(m.today, -29); to = m.today } }
     }
@@ -149,6 +155,7 @@ private fun adjustRowLabel(t: DayTaskSchedule): String {
     return "${t.title}, ${cap(t.effectiveSlot)}" + (t.effectiveTime?.let { " at $it" } ?: "") + chg
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AdjustDayScreen(m: AppModel) {
     var day by rememberSaveable { mutableStateOf(m.overrideDay.ifEmpty { m.today }) }
@@ -156,7 +163,7 @@ fun AdjustDayScreen(m: AppModel) {
     m.managedChild?.let { Muted("for ${it.firstName}") }
     Muted("Nudge a task's time or skip it — just for one day, without changing the recurring schedule.")
     Field(day, { day = it }, "Day (YYYY-MM-DD)")
-    Row {
+    FlowRow {
         LinkButton("Yesterday") { if (m.today.isNotEmpty()) day = shiftDate(m.today, -1) }
         LinkButton("Today") { day = m.today }
         LinkButton("Tomorrow") { if (m.today.isNotEmpty()) day = shiftDate(m.today, 1) }
@@ -178,6 +185,7 @@ fun AdjustDayScreen(m: AppModel) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun OverrideEditorScreen(m: AppModel) {
     val t = m.editingOverride ?: run { Muted("No task selected."); return }
@@ -191,7 +199,7 @@ fun OverrideEditorScreen(m: AppModel) {
     SelectChip(if (skip) "Skipped — won't show this day" else "Skip this day", skip) { skip = !skip }
     if (!skip) {
         SectionHeader("Time slot")
-        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             SelectChip("Default (${cap(t.defaultSlot)})", slot == null) { slot = null }
             slotIds.forEach { s -> SelectChip(cap(s), slot == s) { slot = s } }
         }

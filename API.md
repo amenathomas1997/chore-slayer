@@ -143,7 +143,7 @@ checked on that day.
 ### Daily check-offs (the kid action)
 | Action | Method | Auth | Params / Body | Returns |
 |---|---|---|---|---|
-| `toggle_completion` | POST | 🧒 | `{ childId, taskId, day? }` | `{ ok, completed, day }` |
+| `toggle_completion` | POST | 🧒 | `{ childId, taskId, day? }` | `{ ok, completed, day, clearedFollowUps? }`. Unchecking a main task also clears that day's follow-up checks (`clearedFollowUps` = how many). Checking a follow-up whose main task isn't checked returns 409 `parent_not_done`. |
 
 Toggles the check for `day` (default today). Works for both main tasks and
 follow-up checks (pass the sub-step's id as `taskId`). `completed` is the new state.

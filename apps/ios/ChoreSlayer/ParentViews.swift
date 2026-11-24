@@ -8,7 +8,7 @@ struct ParentLoginView: View {
             Text("Parent sign-in")
                 .font(.title2.bold())
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityAddTraits(.isHeader)
+                .screenHeading()
             SecureField("PIN", text: $pin)
                 .textFieldStyle(.roundedBorder)
                 .keyboardType(.numberPad)
@@ -19,7 +19,7 @@ struct ParentLoginView: View {
                     }
                 }
             Button("Sign in") { Task { await model.parentLogin(pin: pin) } }
-                .buttonStyle(.borderedProminent)
+                .primaryButton()
                 .frame(maxWidth: .infinity, minHeight: 48)
                 .disabled(model.busy || pin.count < 4)
         }
@@ -33,12 +33,12 @@ struct ChildrenView: View {
             Text("Children")
                 .font(.title2.bold())
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityAddTraits(.isHeader)
+                .screenHeading()
             Button { model.addChildStart() } label: {
                 HStack { Text("➕").accessibilityHidden(true); Text("Add a child"); Spacer() }
                     .frame(maxWidth: .infinity, minHeight: 48)
             }
-            .buttonStyle(.borderedProminent)
+            .primaryButton()
             .accessibilityLabel("Add a child")
             if model.children.isEmpty && !model.busy {
                 Text("No children yet.").foregroundStyle(Color.muted)
@@ -79,7 +79,7 @@ struct ChildHubView: View {
                     .font(.title2.bold())
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityLabel("\(c.firstName) \(c.lastName)")
-                    .accessibilityAddTraits(.isHeader)
+                    .screenHeading()
                 HubButton(emoji: "📋", title: "Today's board") {
                     if let c = model.managedChild { Task { await model.openBoard(c) } }
                 }
@@ -107,7 +107,7 @@ struct HubButton: View {
             .frame(maxWidth: .infinity, minHeight: 52)
             .padding(.horizontal, 4)
         }
-        .buttonStyle(.borderedProminent)
+        .primaryButton()
         .accessibilityLabel(title)
     }
 }

@@ -16,7 +16,7 @@ struct ConnectDeviceView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Welcome to Chore Slayer")
                 .font(.title2.bold())
-                .accessibilityAddTraits(.isHeader)
+                .screenHeading()
             Text("Set up your family to get started.")
                 .foregroundStyle(Color.muted)
             Picker("Set up", selection: $mode) {
@@ -62,7 +62,7 @@ private struct CreateFamilyForm: View {
                 problem = nil
                 Task { await model.createFamily(name: name.trimmingCharacters(in: .whitespaces), pin: pin) }
             }
-            .buttonStyle(.borderedProminent)
+            .primaryButton()
             .frame(maxWidth: .infinity, minHeight: 48)
             .disabled(model.busy)
         }
@@ -92,7 +92,7 @@ private struct ConnectFamilyForm: View {
             Button("Connect") {
                 Task { await model.connectDevice(code: code.trimmingCharacters(in: .whitespaces), pin: pin) }
             }
-            .buttonStyle(.borderedProminent)
+            .primaryButton()
             .frame(maxWidth: .infinity, minHeight: 48)
             .disabled(model.busy || code.trimmingCharacters(in: .whitespaces).isEmpty || pin.count < 4)
         }
@@ -122,26 +122,35 @@ struct PinField: View {
 struct FamilyCodeSheet: View {
     let code: String
     let onDone: () -> Void
+    @State private var copied = false
     var body: some View {
-        VStack(spacing: 18) {
-            Text("Your Family Code")
-                .font(.title2.bold())
-                .accessibilityAddTraits(.isHeader)
-            Text("Save this Family Code somewhere safe. You’ll need it to add another device, sign in on the web, or recover your account:")
-                .multilineTextAlignment(.center)
-            Text(code)
-                .font(.system(size: 34, weight: .heavy, design: .monospaced))
-                .textSelection(.enabled)
-                .accessibilityLabel("Family code: " + code.map { String($0) }.joined(separator: " "))
-            Button("Copy code") { UIPasteboard.general.string = code }
-            Text("From now on, your PIN unlocks the parent area on this device.")
-                .font(.footnote).foregroundStyle(Color.muted)
-                .multilineTextAlignment(.center)
-            Button("Got it", action: onDone)
-                .buttonStyle(.borderedProminent)
-                .frame(maxWidth: .infinity, minHeight: 48)
+        ScrollView {
+            VStack(spacing: 18) {
+                Text("Your Family Code")
+                    .font(.title2.bold())
+                    .accessibilityAddTraits(.isHeader)
+                Text("Save this Family Code somewhere safe. You’ll need it to add another device, sign in on the web, or recover your account:")
+                    .multilineTextAlignment(.center)
+                Text(code)
+                    .font(.system(.largeTitle, design: .monospaced).weight(.heavy))
+                    .multilineTextAlignment(.center)
+                    .textSelection(.enabled)
+                    .accessibilityLabel("Family code: " + code.map { String($0) }.joined(separator: " "))
+                Button(copied ? "Copied" : "Copy code") {
+                    UIPasteboard.general.string = code
+                    copied = true
+                    Announcer.say("Family code copied")
+                }
+                .frame(minHeight: 44)
+                Text("From now on, your PIN unlocks the parent area on this device.")
+                    .font(.footnote).foregroundStyle(Color.muted)
+                    .multilineTextAlignment(.center)
+                Button("Got it", action: onDone)
+                    .primaryButton()
+                    .frame(maxWidth: .infinity, minHeight: 48)
+            }
+            .padding(24)
         }
-        .padding(24)
     }
 }
 
@@ -156,7 +165,7 @@ struct ChangePinView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Change PIN")
                 .font(.title2.bold())
-                .accessibilityAddTraits(.isHeader)
+                .screenHeading()
             PinField(title: "Current PIN", pin: $current, isNew: false)
             PinField(title: "New PIN", pin: $new1, isNew: true)
             PinField(title: "Confirm new PIN", pin: $new2, isNew: true)
@@ -169,7 +178,7 @@ struct ChangePinView: View {
                 problem = nil
                 Task { await model.changePin(current: current, new: new1) }
             }
-            .buttonStyle(.borderedProminent)
+            .primaryButton()
             .frame(maxWidth: .infinity, minHeight: 48)
             .disabled(model.busy || current.count < 4)
         }
@@ -189,12 +198,11 @@ struct DeleteFamilyView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Delete family")
                 .font(.title2.bold())
-                .accessibilityAddTraits(.isHeader)
+                .screenHeading()
             Text("This permanently deletes your family account, every child, all tasks, history and reports, on every device and on the web. It cannot be undone.")
             PinField(title: "Parent PIN", pin: $pin, isNew: false)
             Button("Delete everything", role: .destructive) { confirming = true }
-                .buttonStyle(.borderedProminent)
-                .tint(.red)
+                .primaryButton(.dangerFill)
                 .frame(maxWidth: .infinity, minHeight: 48)
                 .disabled(model.busy || pin.count < 4)
         }
@@ -219,7 +227,7 @@ struct KidSummaryView: View {
             VStack(spacing: 14) {
                 Text("\(child.firstName)'s Day")
                     .font(.title2.bold())
-                    .accessibilityAddTraits(.isHeader)
+                    .screenHeading()
                 Text(board.day).font(.footnote).foregroundStyle(Color.muted)
 
                 ZStack {
@@ -231,7 +239,7 @@ struct KidSummaryView: View {
                 }
                 .frame(width: 150, height: 150)
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(pct) percent of tasks done")
+                .accessibilityLabel("\(pct) percent of steps done")
 
                 Text(Self.cheer(pct)).font(.headline).multilineTextAlignment(.center)
                 Text(String(repeating: "★", count: stars) + String(repeating: "☆", count: 5 - stars))
@@ -243,6 +251,7 @@ struct KidSummaryView: View {
                     StatTile(value: "\(c.total - c.done)", label: "Still to do")
                     if let ch = c.chores { StatTile(value: "\(ch.done)/\(ch.total)", label: "Chores") }
                     if let ac = c.activities { StatTile(value: "\(ac.done)/\(ac.total)", label: "Activities") }
+                    if let st = c.steps, st.total > 0 { StatTile(value: "\(st.done)/\(st.total)", label: "Follow-up checks") }
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
@@ -251,14 +260,20 @@ struct KidSummaryView: View {
                     }
                     ForEach(board.tasks) { t in
                         let partial = !t.complete && t.done
+                        let stepsTotal = 1 + t.subtasks.count
+                        let stepsDone = (t.done ? 1 : 0) + t.subtasks.filter(\.done).count
+                        let status = t.complete ? "Done" : (partial ? "\(stepsDone) of \(stepsTotal) steps done" : "Not yet")
                         HStack(alignment: .top) {
                             Text(t.complete ? "✅" : (partial ? "🟡" : "⬜")).accessibilityHidden(true)
-                            Text("\(t.emoji) \(t.title)")
+                            Text(t.emoji).accessibilityHidden(true)
+                            Text(t.title)
                             Spacer()
-                            Text(t.complete ? "Done" : (partial ? "Partly" : "Not yet"))
+                            Text(status)
                                 .font(.footnote.weight(.semibold)).foregroundStyle(Color.muted)
+                                .multilineTextAlignment(.trailing)
                         }
-                        .accessibilityElement(children: .combine)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("\(t.title), \(status)")
                         ForEach(t.subtasks) { s in
                             HStack {
                                 Text(s.done ? "✅" : "⬜").accessibilityHidden(true)
@@ -268,13 +283,15 @@ struct KidSummaryView: View {
                                     .font(.footnote).foregroundStyle(Color.muted)
                             }
                             .padding(.leading, 28)
-                            .accessibilityElement(children: .combine)
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel("Follow-up for \(t.title): \(s.title), \(s.done ? "done" : "not yet")")
                         }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 Button("← Back to my chores") { model.back() }
+                    .accessibilityLabel("Back to my chores")
                     .buttonStyle(.bordered)
                     .frame(maxWidth: .infinity, minHeight: 48)
             }

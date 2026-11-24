@@ -13,7 +13,7 @@ struct AdjustDayView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Adjust a day").font(.title2.bold()).accessibilityAddTraits(.isHeader)
+            Text("Adjust a day").font(.title2.bold()).screenHeading()
             if let c = model.managedChild {
                 Text("for \(c.firstName)").font(.subheadline).foregroundStyle(Color.muted)
             }
@@ -21,7 +21,7 @@ struct AdjustDayView: View {
                 .font(.footnote).foregroundStyle(Color.muted)
 
             TextField("Day (YYYY-MM-DD)", text: $day).textFieldStyle(.roundedBorder).accessibilityLabel("Day")
-            HStack {
+            AdaptiveStack {
                 Button("Yesterday") { if !model.today.isEmpty { day = shiftDate(model.today, by: -1) } }
                 Button("Today") { if !model.today.isEmpty { day = model.today } }
                 Button("Tomorrow") { if !model.today.isEmpty { day = shiftDate(model.today, by: 1) } }
@@ -29,7 +29,7 @@ struct AdjustDayView: View {
             Button("Show day") {
                 Task { await model.loadDaySchedule(day: day.trimmingCharacters(in: .whitespaces)) }
             }
-            .buttonStyle(.borderedProminent).frame(maxWidth: .infinity, minHeight: 48)
+            .primaryButton().frame(maxWidth: .infinity, minHeight: 48)
             .disabled(model.busy || day.isEmpty)
 
             if let sched = model.daySchedule {
@@ -87,7 +87,7 @@ struct OverrideEditorView: View {
     var body: some View {
         if let task {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Adjust for \(model.overrideDay)").font(.title2.bold()).accessibilityAddTraits(.isHeader)
+                Text("Adjust for \(model.overrideDay)").font(.title2.bold()).screenHeading()
                 Text("\(task.emoji) \(task.title)").font(.headline).accessibilityLabel(task.title)
                 Text("Recurring default: \(task.defaultSlot.capitalized)\(task.defaultTime.map { " · \($0)" } ?? "")")
                     .font(.footnote).foregroundStyle(Color.muted)
@@ -118,7 +118,7 @@ struct OverrideEditorView: View {
                             skipped: skip)
                     }
                 }
-                .buttonStyle(.borderedProminent).frame(maxWidth: .infinity, minHeight: 48).disabled(model.busy)
+                .primaryButton().frame(maxWidth: .infinity, minHeight: 48).disabled(model.busy)
 
                 if task.overrideSlot != nil || task.overrideTime != nil || task.skipped {
                     Button("Reset to recurring default") {

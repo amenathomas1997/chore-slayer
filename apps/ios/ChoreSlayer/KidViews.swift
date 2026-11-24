@@ -4,11 +4,11 @@ struct ConnectingView: View {
     @ObservedObject var model: AppModel
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Chore Slayer").font(.largeTitle.bold()).accessibilityAddTraits(.isHeader)
+            Text("Chore Slayer").font(.largeTitle.bold()).screenHeading()
             if model.error != nil && !model.busy {
                 Text("Couldn't reach Chore Slayer. Check your internet connection, then try again.")
                 Button("Try again") { Task { await model.connect() } }
-                    .buttonStyle(.borderedProminent)
+                    .primaryButton()
                     .frame(maxWidth: .infinity, minHeight: 48)
             } else {
                 Text("Connecting…").foregroundStyle(Color.muted)
@@ -26,13 +26,13 @@ struct RoleView: View {
             Text("Who's using the app?")
                 .font(.title2.bold())
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityAddTraits(.isHeader)
+                .screenHeading()
             if let fam = model.family {
                 Text("Family: \(fam.name ?? fam.code)")
                     .foregroundStyle(Color.muted)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            BigButton(symbol: "person.fill", title: "I'm a Kid", color: .brand) { model.chooseKid() }
+            BigButton(symbol: "person.fill", title: "I'm a Kid", color: .brandFill) { model.chooseKid() }
             BigButton(symbol: "person.2.fill", title: "Parent / Admin", color: .brandPurple) { model.chooseParent() }
             Button("Use a different family") { confirmForget = true }
                 .font(.footnote)
@@ -59,8 +59,7 @@ struct BigButton: View {
             }
             .frame(maxWidth: .infinity, minHeight: 60)
         }
-        .buttonStyle(.borderedProminent)
-        .tint(color)
+        .primaryButton(color)
         .accessibilityLabel(title)
     }
 }
@@ -79,7 +78,7 @@ struct KidLoginView: View {
             Text("Type your name")
                 .font(.title2.bold())
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityAddTraits(.isHeader)
+                .screenHeading()
             TextField("First name", text: $first).textFieldStyle(.roundedBorder)
             TextField("Last name", text: $last).textFieldStyle(.roundedBorder)
             Button("See my chores") {
@@ -89,7 +88,7 @@ struct KidLoginView: View {
                         last: last.trimmingCharacters(in: .whitespaces))
                 }
             }
-            .buttonStyle(.borderedProminent)
+            .primaryButton()
             .frame(maxWidth: .infinity, minHeight: 48)
             .disabled(!canSubmit)
         }
@@ -103,6 +102,8 @@ private struct Slot: Identifiable {
 
 struct BoardView: View {
     @ObservedObject var model: AppModel
+    /// Asked before unchecking a task whose follow-up checks are partly done.
+    @State private var confirmUncheck: DayTask?
     private let slots: [Slot] = [
         Slot(id: "morning", label: "🌅 Morning"),
         Slot(id: "midday", label: "☀️ Midday"),
@@ -116,10 +117,11 @@ struct BoardView: View {
                 Text("\(child.emoji) \(child.firstName)'s day")
                     .font(.title2.bold())
                     .accessibilityLabel("\(child.firstName)'s day")
-                    .accessibilityAddTraits(.isHeader)
+                    .screenHeading()
                 Text(board.day).font(.footnote).foregroundStyle(Color.muted)
-                Text("\(board.counts.done) of \(board.counts.total) done • \(board.counts.percent)%")
+                Text(countsLine(board.counts))
                     .font(.headline)
+                    .accessibilityLabel(countsSpoken(board.counts))
                 ProgressView(value: Double(min(max(board.counts.percent, 0), 100)), total: 100)
                     .accessibilityHidden(true)
                 if board.tasks.isEmpty {
@@ -129,14 +131,32 @@ struct BoardView: View {
                     SlotSection(
                         label: slot.label,
                         items: board.tasks.filter { $0.slot == slot.id },
-                        onToggle: { id in Task { await model.toggle(id) } })
+                        onToggle: { task in
+                            if task.done && task.subtasks.contains(where: \.done) {
+                                confirmUncheck = task
+                            } else {
+                                Task { await model.toggle(task.id) }
+                            }
+                        },
+                        onToggleSub: { id in Task { await model.toggle(id) } })
                 }
                 Button("🎉 See my day") { Task { await model.openKidSummary() } }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.green)
+                    .primaryButton(.goodGreenFill)
                     .frame(maxWidth: .infinity, minHeight: 48)
                     .padding(.top, 8)
+                    .accessibilityLabel("See my day")
                 KidReminderCard(model: model)
+            }
+            .confirmationDialog(
+                "Uncheck \(confirmUncheck?.title ?? "this task")?",
+                isPresented: Binding(get: { confirmUncheck != nil }, set: { if !$0 { confirmUncheck = nil } }),
+                titleVisibility: .visible,
+                presenting: confirmUncheck
+            ) { task in
+                Button("Uncheck it", role: .destructive) { Task { await model.toggle(task.id) } }
+                Button("Keep it checked", role: .cancel) {}
+            } message: { _ in
+                Text("Its follow-up checks will be cleared too.")
             }
         } else {
             Text("Loading…")
@@ -144,18 +164,29 @@ struct BoardView: View {
     }
 }
 
+/// "2 of 3 tasks finished · 67% of steps"
+func countsLine(_ c: Counts) -> String {
+    "\(c.done) of \(c.total) tasks finished · \(c.percent)% of steps"
+}
+
+func countsSpoken(_ c: Counts) -> String {
+    "\(c.done) of \(c.total) tasks finished, \(c.percent) percent of steps done"
+}
+
 private struct SlotSection: View {
     let label: String
     let items: [DayTask]
-    let onToggle: (String) -> Void
+    let onToggle: (DayTask) -> Void
+    let onToggleSub: (String) -> Void
     var body: some View {
         if !items.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 Text(label)
                     .font(.subheadline.weight(.semibold))
+                    .accessibilityLabel(String(label.drop { !$0.isLetter }))
                     .accessibilityAddTraits(.isHeader)
                 ForEach(items) { task in
-                    TaskRow(task: task, onToggle: onToggle)
+                    TaskRow(task: task, onToggle: { onToggle(task) }, onToggleSub: onToggleSub)
                 }
             }
             .padding(.top, 8)
@@ -165,31 +196,59 @@ private struct SlotSection: View {
 
 struct TaskRow: View {
     let task: DayTask
-    let onToggle: (String) -> Void
+    let onToggle: () -> Void
+    let onToggleSub: (String) -> Void
+
+    private var stepCount: Int { task.subtasks.count }
+    private var stepsLeft: Int { task.subtasks.filter { !$0.done }.count }
+    private var partial: Bool { task.done && !task.complete }
 
     private var bg: Color {
         if task.complete { return .taskDone }
         if task.done { return .taskPartial }
         return Color(.secondarySystemBackground)
     }
+    /// Shape, not only colour: empty, minus (part done) or check (all done).
+    private var symbol: String {
+        task.complete ? "checkmark.square.fill" : (task.done ? "minus.square.fill" : "square")
+    }
+    private func steps(_ n: Int) -> String { n == 1 ? "1 step" : "\(n) steps" }
+    private func checks(_ n: Int) -> String { n == 1 ? "1 follow-up check" : "\(n) follow-up checks" }
+
+    /// Visible status line under the title (nil when there's nothing to add).
+    private var statusText: String? {
+        if stepCount == 0 { return task.done ? "Done!" : nil }
+        if task.complete { return "All done!" }
+        if task.done { return "\(stepsLeft) of \(stepCount) steps left" }
+        return "+\(steps(stepCount)) after"
+    }
     private var stateWord: String {
-        task.complete ? "completed" : (task.done ? "checked, follow-ups remaining" : "not done")
+        if stepCount == 0 { return task.done ? "done" : "not done" }
+        if task.complete { return "all done" }
+        if task.done { return "checked, \(stepsLeft) of \(checks(stepCount)) left" }
+        return "not done, then \(checks(stepCount))"
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Button { onToggle(task.id) } label: {
+        VStack(alignment: .leading, spacing: 0) {
+            Button(action: onToggle) {
                 HStack(alignment: .top) {
-                    Image(systemName: task.done ? "checkmark.square.fill" : "square").accessibilityHidden(true)
+                    Image(systemName: symbol).accessibilityHidden(true)
                     Text(task.emoji).accessibilityHidden(true)
-                    VStack(alignment: .leading) {
+                    VStack(alignment: .leading, spacing: 2) {
                         Text(task.title).font(.body.weight(.medium))
                         if let t = task.time {
                             Text("at \(t)").font(.footnote).foregroundStyle(Color.muted)
                         }
+                        if let st = statusText {
+                            Text(st).font(.footnote.weight(.semibold))
+                                .foregroundStyle(task.complete ? Color.goodGreen : Color.muted)
+                        }
                     }
-                    Spacer()
+                    Spacer(minLength: 0)
                 }
+                .padding(12)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -198,26 +257,42 @@ struct TaskRow: View {
             .accessibilityAddTraits(.isButton)
 
             if task.done && !task.subtasks.isEmpty {
-                ForEach(task.subtasks) { sub in
-                    Button { onToggle(sub.id) } label: {
-                        HStack {
+                ForEach(Array(task.subtasks.enumerated()), id: \.element.id) { i, sub in
+                    Button { onToggleSub(sub.id) } label: {
+                        HStack(alignment: .firstTextBaseline) {
                             Image(systemName: sub.done ? "checkmark.square.fill" : "square").accessibilityHidden(true)
-                            Text(sub.emoji).accessibilityHidden(true)
-                            Text(sub.title)
-                            Spacer()
+                            // The default follow-up emoji (☑️) reads as a second, already-ticked box, so leave it out.
+                            if sub.emoji != "☑️" && !sub.emoji.isEmpty {
+                                Text(sub.emoji).accessibilityHidden(true)
+                            }
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text(sub.title)
+                                Text("Step \(i + 1) of \(stepCount)")
+                                    .font(.footnote).foregroundStyle(Color.muted)
+                            }
+                            Spacer(minLength: 0)
                         }
+                        .padding(.leading, 40)
+                        .padding(.trailing, 12)
+                        .padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .padding(.leading, 28)
-                    .accessibilityLabel(sub.title)
+                    .accessibilityLabel("\(sub.title), step \(i + 1) of \(stepCount) for \(task.title)")
                     .accessibilityValue(sub.done ? "done" : "not done")
                     .accessibilityAddTraits(.isButton)
                 }
+                Spacer().frame(height: 4)
             }
         }
-        .padding(12)
         .background(bg)
         .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay {
+            // A ≥ 3:1 border marks "all done" without relying on the fill colour.
+            if task.complete {
+                RoundedRectangle(cornerRadius: 12).strokeBorder(Color.goodGreen, lineWidth: 2)
+            }
+        }
     }
 }

@@ -1,7 +1,9 @@
 package com.at365.choretracker
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.selection.triStateToggleable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,6 +14,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
+import androidx.compose.material3.TriStateCheckbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -19,6 +24,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -29,9 +35,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -81,58 +90,94 @@ fun BoardScreen(m: AppModel) {
     if (board == null || child == null) { Muted("Loading…"); return }
     Title("${child.emoji} ${child.firstName}'s day", a11y = "${child.firstName}'s day")
     Muted(board.day)
-    Text("${board.counts.done} of ${board.counts.total} done • ${board.counts.percent}%", style = MaterialTheme.typography.titleMedium)
+    Text(progressText(board.counts), style = MaterialTheme.typography.titleMedium)
     LinearProgressIndicator(progress = { board.counts.percent.coerceIn(0, 100) / 100f },
         modifier = Modifier.fillMaxWidth().clearAndSetSemantics { })
+    // What the last check-off did ("Brush teeth checked. 2 more steps below."). Always composed,
+    // so each new message is a text change the polite live region announces.
+    Text(m.kidStatus, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium,
+        modifier = Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite })
     if (board.tasks.isEmpty()) Text("🎉 Nothing scheduled for today!")
     for ((id, label) in slotLabels) {
         val items = board.tasks.filter { it.slot == id }
         if (items.isEmpty()) continue
         SectionHeader(label)
-        items.forEach { TaskRow(it) { taskId -> m.toggle(taskId) } }
+        // key(): focus and state follow the task, not its position, if the list changes.
+        items.forEach { t -> key(t.id) { TaskRow(t) { taskId -> m.toggle(taskId) } } }
     }
     Gap(8)
     PrimaryButton("🎉 See my day", color = Palette.goodGreen) { m.openKidSummary() }
     KidReminderCard(m)
 }
 
+private fun progressText(c: Counts): String {
+    val pctLabel = if (c.steps != null && c.steps.total > 0) "${c.percent}% of steps" else "${c.percent}%"
+    return "${c.done} of ${c.total} tasks finished · $pctLabel"
+}
+
 @Composable
 private fun TaskRow(task: DayTask, onToggle: (String) -> Unit) {
-    val bg = when { task.complete -> Palette.taskDone; task.done -> Palette.taskPartial; else -> Palette.card }
-    val state = when { task.complete -> "completed"; task.done -> "checked, follow-ups remaining"; else -> "not done" }
-    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(bg).padding(4.dp)) {
+    val subs = task.subtasks
+    val left = subs.count { !it.done }
+    val partial = task.done && !task.complete
+    val bg = when { task.complete -> Palette.taskDone; partial -> Palette.taskPartial; else -> Palette.card }
+    val toggle = when { task.complete -> ToggleableState.On; partial -> ToggleableState.Indeterminate; else -> ToggleableState.Off }
+    val stepWord = { n: Int -> if (n == 1) "step" else "steps" }
+    val state = when {
+        task.complete -> "done"
+        partial -> "checked, $left of ${subs.size} follow-up ${stepWord(subs.size)} left"
+        subs.isNotEmpty() -> "not done, then ${subs.size} follow-up ${stepWord(subs.size)}"
+        else -> "not done"
+    }
+    val shape = RoundedCornerShape(12.dp)
+    Column(
+        Modifier.fillMaxWidth().clip(shape).background(bg)
+            // Complete gets a dark border (well over 3:1) so it differs from partial by more than colour.
+            .then(if (task.complete) Modifier.border(2.dp, Palette.goodGreen, shape) else Modifier)
+            .padding(4.dp)
+    ) {
         Row(
             Modifier.fillMaxWidth().heightIn(min = 52.dp)
-                .clickable(role = Role.Checkbox) { onToggle(task.id) }
+                .triStateToggleable(state = toggle, role = Role.Checkbox) { onToggle(task.id) }
                 .semantics(mergeDescendants = true) {
                     contentDescription = task.title + (task.time?.let { ", at $it" } ?: "") + ", " + task.type
                     stateDescription = state
                 }
-                .padding(8.dp),
+                .padding(4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(if (task.done) "☑" else "☐", fontSize = 22.sp, modifier = Modifier.clearAndSetSemantics { })
+            TriStateCheckbox(state = toggle, onClick = null, modifier = Modifier.clearAndSetSemantics { },
+                colors = CheckboxDefaults.colors(checkedColor = Palette.goodGreen))
             Text(" ${task.emoji} ", modifier = Modifier.clearAndSetSemantics { })
             Column(Modifier.weight(1f).clearAndSetSemantics { }) {
                 Text(task.title, fontWeight = FontWeight.Medium)
                 task.time?.let { Muted("at $it") }
+                when {
+                    task.complete -> Text("All done!", color = Palette.goodGreen, fontWeight = FontWeight.Bold)
+                    partial -> Text("$left of ${subs.size} ${stepWord(subs.size)} left", color = Color(0xFF6B4500), fontWeight = FontWeight.Bold)
+                }
             }
         }
+        // The server only accepts follow-up checks once the main task is checked.
         if (task.done) {
-            task.subtasks.forEach { sub ->
-                Row(
-                    Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 28.dp)
-                        .clickable(role = Role.Checkbox) { onToggle(sub.id) }
-                        .semantics(mergeDescendants = true) {
-                            contentDescription = sub.title
-                            stateDescription = if (sub.done) "done" else "not done"
-                        }
-                        .padding(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    // The default follow-up emoji (☑️) reads as a second, already-ticked box, so leave it out.
-                    val icon = if (sub.emoji == "☑️" || sub.emoji.isBlank()) "" else "${sub.emoji} "
-                    Text((if (sub.done) "☑" else "☐") + " $icon${sub.title}", modifier = Modifier.clearAndSetSemantics { })
+            subs.forEachIndexed { i, sub ->
+                key(sub.id) {
+                    Row(
+                        Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 28.dp)
+                            .toggleable(value = sub.done, role = Role.Checkbox) { onToggle(sub.id) }
+                            .semantics(mergeDescendants = true) {
+                                contentDescription = "${sub.title}, step ${i + 1} of ${subs.size} for ${task.title}"
+                                stateDescription = if (sub.done) "done" else "not done"
+                            }
+                            .padding(4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(checked = sub.done, onCheckedChange = null, modifier = Modifier.clearAndSetSemantics { },
+                            colors = CheckboxDefaults.colors(checkedColor = Palette.goodGreen))
+                        // The default follow-up emoji (☑️) reads as a second, already-ticked box, so leave it out.
+                        val icon = if (sub.emoji == "☑️" || sub.emoji.isBlank()) "" else "${sub.emoji} "
+                        Text(" $icon${sub.title}", modifier = Modifier.weight(1f).clearAndSetSemantics { })
+                    }
                 }
             }
         }
@@ -168,7 +213,7 @@ fun KidSummaryScreen(m: AppModel) {
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Title("${child.firstName}'s Day", center = true)
         Muted(board.day)
-        Box(Modifier.size(150.dp).semantics(mergeDescendants = true) { contentDescription = "$pct percent of tasks done" },
+        Box(Modifier.size(150.dp).semantics(mergeDescendants = true) { contentDescription = "$pct percent of steps done" },
             contentAlignment = Alignment.Center) {
             CircularProgressIndicator(progress = { pct / 100f }, strokeWidth = 13.dp, modifier = Modifier.size(150.dp),
                 color = Palette.brand, trackColor = Color(0xFFE5E5EA))
@@ -199,16 +244,22 @@ fun KidSummaryScreen(m: AppModel) {
             if (board.tasks.isEmpty()) Muted("Nothing on the list today.")
             board.tasks.forEach { t ->
                 val partial = !t.complete && t.done
+                val stepsTotal = 1 + t.subtasks.size
+                val stepsDone = (if (t.done) 1 else 0) + t.subtasks.count { it.done }
+                val status = if (t.complete) "Done" else if (partial) "$stepsDone of $stepsTotal steps done" else "Not yet"
                 Row(Modifier.fillMaxWidth().semantics(mergeDescendants = true) { }) {
                     Text(if (t.complete) "✅" else if (partial) "🟡" else "⬜", modifier = Modifier.clearAndSetSemantics { })
-                    Text(" ${t.emoji} ${t.title}", modifier = Modifier.weight(1f))
-                    Muted(if (t.complete) "Done" else if (partial) "Partly" else "Not yet")
+                    Text(" ${t.emoji} ", modifier = Modifier.clearAndSetSemantics { })
+                    Text(t.title, modifier = Modifier.weight(1f))
+                    Muted(status)
                 }
                 t.subtasks.forEach { s ->
-                    Row(Modifier.fillMaxWidth().padding(start = 28.dp).semantics(mergeDescendants = true) { }) {
-                        Text(if (s.done) "✅" else "⬜", modifier = Modifier.clearAndSetSemantics { })
+                    val st = if (s.done) "Done" else "Not yet"
+                    Row(Modifier.fillMaxWidth().padding(start = 28.dp)
+                        .clearAndSetSemantics { contentDescription = "${s.title}, step for ${t.title}, $st" }) {
+                        Text(if (s.done) "✅" else "⬜")
                         Text(" ${s.title}", modifier = Modifier.weight(1f))
-                        Muted(if (s.done) "Done" else "Not yet")
+                        Muted(st)
                     }
                 }
             }
